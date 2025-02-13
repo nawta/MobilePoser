@@ -1,0 +1,20 @@
+version: "3.8"
+services:
+  module:
+    build:
+      context: ..
+      dockerfile: ./docker/Dockerfile
+    image: mobileposer_jupyterlab_image  # 好みのイメージ名を指定
+    container_name: mobileposer_jupyterlab_container  # 好みのコンテナ名を指定
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    runtime: nvidia
+    shm_size: "16gb"
+    volumes:
+      - ../:/root/workspace
+    ports:
+      - "24240:8888"  # ホストの 24240 -> コンテナ内の 8888 (JupyterLab)
+      - "24241:6006"  # ホストの 24241 -> コンテナ内の 6006 (TensorBoard)
+    # コンテナ実行コマンド
+    command: ["/bin/bash", "-c", "jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' & tensorboard --logdir=/root/workspace/logs & tail -f /dev/null"]
