@@ -13,6 +13,7 @@ services:
     shm_size: "16gb"
     volumes:
       - ../:/root/workspace
+      - /home/naotonishida/datasets/:/root/datasets
     ports:
       - "24240:8888"  # ホストの 24240 -> コンテナ内の 8888 (JupyterLab)
       - "24241:6006"  # ホストの 24241 -> コンテナ内の 6006 (TensorBoard)

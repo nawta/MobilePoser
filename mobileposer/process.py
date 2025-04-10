@@ -111,7 +111,7 @@ def process_amass():
             b += l
 
         print("Saving...")
-        print(out_vacc.shape, out_pose.shape)
+        #print(out_vacc.shape, out_pose.shape)
         data = {
             'joint': out_joint,
             'pose': out_pose,
@@ -122,7 +122,7 @@ def process_amass():
             'contact': out_contact
         }
         data_path = paths.processed_datasets / f"{ds_name}.pt"
-        #torch.save(data, data_path)
+        torch.save(data, data_path)
         print(f"Synthetic AMASS dataset is saved at: {data_path}")
 
 
