@@ -33,6 +33,8 @@ ENV/
 env.bak/
 venv.bak/
 
+# Datasets
+mobileposer/datasets/
 
 # Custom
 **/.DS_Store
