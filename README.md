@@ -82,6 +82,7 @@ The script `process.py` drives the dataset pre-processing. This script takes the
 As an example, the following command will pre-process the DIP dataset. 
 ```
 $ python process.py --dataset dip
+((mobileposer) root@43469fc1d10a:~/workspace# python mobileposer/process.py --dataset dip)
 ```
 
 ## Training Models 
