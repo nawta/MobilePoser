@@ -14,6 +14,8 @@ conda create -n mobileposer python=3.9
 ```
 You should then activate the environment as shown below. All following operations must be completed within the virtual environment.
 ```
+(conda init)
+(source ~/.bashrc)
 conda activate mobileposer
 ```
 Then, install the required packages.
