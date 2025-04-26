@@ -5,6 +5,10 @@ import torch
 from argparse import ArgumentParser
 from tqdm import tqdm
 import glob
+import sys
+
+sys.path.append('/home/ubuntu/repos/nymeria_dataset')
+from nymeria.xsens_constants import XSensConstants
 
 from mobileposer.articulate.model import ParametricModel
 from mobileposer.articulate import math
@@ -341,6 +345,136 @@ def process_imuposer(split: str="train"):
     torch.save(data, data_path)
 
 
+def process_nymeria(split="train"):
+    """Process Nymeria dataset for training and evaluation."""
+    def _foot_ground_probs(joint):
+        """Compute foot-ground contact probabilities."""
+        dist_lfeet = torch.norm(joint[1:, 10] - joint[:-1, 10], dim=1)
+        dist_rfeet = torch.norm(joint[1:, 11] - joint[:-1, 11], dim=1)
+        lfoot_contact = (dist_lfeet < 0.008).int()
+        rfoot_contact = (dist_rfeet < 0.008).int()
+        lfoot_contact = torch.cat((torch.zeros(1, dtype=torch.int), lfoot_contact))
+        rfoot_contact = torch.cat((torch.zeros(1, dtype=torch.int), rfoot_contact))
+        return torch.stack((lfoot_contact, rfoot_contact), dim=1)
+
+    # enable skipping processed files
+    try:
+        processed = [fpath.name for fpath in (paths.processed_datasets).iterdir()]
+    except FileNotFoundError:
+        processed = []
+
+    test_split = []  # Add test sequences here
+    train_split = datasets.nymeria_datasets
+    sequences = train_split if split == "train" else test_split
+    
+    # Skip if already processed
+    if f"nymeria_{split}.pt" in processed:
+        print(f"Nymeria {split} dataset already processed. Skipping.")
+        return
+
+    data_pose, data_trans, data_beta, length = [], [], [], []
+    print(f"\rReading Nymeria {split} dataset")
+
+    for seq_name in tqdm(sequences):
+        try:
+            seq_path = os.path.join(paths.raw_nymeria, seq_name)
+            
+            xsens_npz_paths = [
+                os.path.join(seq_path, "body", "xdata.npz"),
+                os.path.join(seq_path, "xsens", "xdata.npz"),
+                os.path.join(seq_path, "xdata.npz")
+            ]
+            
+            xsens_npz_path = None
+            for path in xsens_npz_paths:
+                if os.path.exists(path):
+                    xsens_npz_path = path
+                    break
+            
+            if xsens_npz_path is None:
+                print(f"XSens data not found for {seq_name}, skipping")
+                continue
+                
+            xsens_data = np.load(xsens_npz_path)
+            
+            if XSensConstants.k_part_qWXYZ not in xsens_data or XSensConstants.k_part_tXYZ not in xsens_data:
+                print(f"Required XSens data keys not found in {seq_name}, skipping")
+                print(f"Available keys: {list(xsens_data.keys())}")
+                continue
+            
+            q_wxyz = xsens_data[XSensConstants.k_part_qWXYZ].reshape(-1, XSensConstants.num_parts, 4)
+            t_xyz = xsens_data[XSensConstants.k_part_tXYZ].reshape(-1, XSensConstants.num_parts, 3)
+            
+            step = max(1, round(240 / TARGET_FPS))  # Nymeria is recorded at 240Hz
+            
+            for i in range(0, len(q_wxyz), step):
+                quat = torch.tensor(q_wxyz[i])
+                trans = torch.tensor(t_xyz[i])
+                
+                pose = math.quaternion_to_axis_angle(quat)
+                
+                data_pose.append(pose.reshape(-1).numpy())
+                data_trans.append(trans[0].numpy())  # Use pelvis as root
+                data_beta.append(np.zeros(10))  # Use default shape
+                
+            length.append(len(range(0, len(q_wxyz), step)))
+            
+        except Exception as e:
+            print(f"Error processing sequence {seq_name}: {e}")
+            continue
+
+    if len(data_pose) == 0:
+        print(f"No valid sequences found in Nymeria dataset")
+        return
+
+    length = torch.tensor(length, dtype=torch.int)
+    shape = torch.tensor(np.asarray(data_beta, np.float32))
+    tran = torch.tensor(np.asarray(data_trans, np.float32))
+    pose = torch.tensor(np.asarray(data_pose, np.float32)).view(-1, XSensConstants.num_parts*3)
+    
+    pose_smpl = torch.zeros((pose.shape[0], 24, 3), dtype=torch.float32)
+    for i in range(min(XSensConstants.num_parts, 24)):
+        pose_smpl[:, i] = pose[:, i*3:(i+1)*3]
+    
+    nymeria_rot = torch.tensor([[[1, 0, 0], [0, 0, 1], [0, -1, 0.]]])
+    tran = nymeria_rot.matmul(tran.unsqueeze(-1)).view_as(tran)
+    pose_smpl[:, 0] = math.rotation_matrix_to_axis_angle(
+        nymeria_rot.matmul(math.axis_angle_to_rotation_matrix(pose_smpl[:, 0])))
+
+    print("Synthesizing IMU accelerations and orientations")
+    b = 0
+    out_pose, out_shape, out_tran, out_joint, out_vrot, out_vacc, out_contact = [], [], [], [], [], [], []
+    for i, l in tqdm(list(enumerate(length))):
+        if l <= 12: b += l; print("\tdiscard one sequence with length", l); continue
+        p = math.axis_angle_to_rotation_matrix(pose_smpl[b:b + l]).view(-1, 24, 3, 3)
+        
+        grot, joint, vert = body_model.forward_kinematics(p, shape[i], tran[b:b + l], calc_mesh=True)
+
+        out_pose.append(p.clone())  # N, 24, 3, 3
+        out_tran.append(tran[b:b + l].clone())  # N, 3
+        out_shape.append(shape[i].clone())  # 10
+        out_joint.append(joint[:, :24].contiguous().clone())  # N, 24, 3
+        out_vacc.append(_syn_acc(vert[:, vi_mask]))  # N, 6, 3
+        out_contact.append(_foot_ground_probs(joint).clone()) # N, 2
+
+        out_vrot.append(grot[:, ji_mask])  # N, 6, 3, 3
+        b += l
+
+    print("Saving...")
+    data = {
+        'joint': out_joint,
+        'pose': out_pose,
+        'shape': out_shape,
+        'tran': out_tran,
+        'acc': out_vacc,
+        'ori': out_vrot,
+        'contact': out_contact
+    }
+    data_path = paths.eval_dir / f"nymeria_{split}.pt" if split == "test" else paths.processed_datasets / f"nymeria_{split}.pt"
+    torch.save(data, data_path)
+    print(f"Processed Nymeria {split} dataset is saved at: {data_path}")
+
+
 def create_directories():
     paths.processed_datasets.mkdir(exist_ok=True, parents=True)
     paths.eval_dir.mkdir(exist_ok=True, parents=True)
@@ -365,5 +499,8 @@ if __name__ == "__main__":
     elif args.dataset == "dip":
         process_dipimu(split="train")
         process_dipimu(split="test")
+    elif args.dataset == "nymeria":
+        process_nymeria(split="train")
+        process_nymeria(split="test")
     else:
         raise ValueError(f"Dataset {args.dataset} not supported.")
