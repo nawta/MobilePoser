@@ -29,10 +29,10 @@ class paths:
     checkpoint = root_dir / "checkpoints"
     smpl_file = root_dir / "smpl/basicmodel_m.pkl"
     weights_file = root_dir / "checkpoints/weights.pth"
-    raw_amass = Path("/home/ubuntu/repos/MobilePoser/datasets/DIPIMUandOthers.zip")  # AMASS dataset location
+    raw_amass = Path("/home/ubuntu/repos/MobilePoser/datasets/AMASS")  # AMASS dataset location
     raw_dip = Path("/home/ubuntu/repos/MobilePoser/datasets/DIP_IMU")  # DIP_IMU dataset location
-    raw_imuposer = Path("/home/ubuntu/repos/MobilePoser/datasets")  # IMUPoser dataset location
-    raw_nymeria = Path("/tmp/nymeria_test")  # Temporary test path
+    raw_imuposer = Path("/home/ubuntu/repos/MobilePoser/datasets/imuposer_dataset")  # IMUPoser dataset location
+    raw_nymeria = Path("/mnt/nas2/naoto/nymeria_dataset/data_recording_head_rwrist_lwrist")  # Nymeria dataset location
     eval_dir = root_dir / "datasets/processed_datasets/eval"
     processed_datasets = root_dir / "datasets/processed_datasets"
 

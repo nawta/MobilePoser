@@ -232,8 +232,8 @@ def process_dipimu(split="test"):
     """Preprocess DIP for finetuning and evaluation."""
     imu_mask = [7, 8, 9, 10, 0, 2]
 
-    test_split = ['s_09', 's_10']
-    train_split = ['s_01', 's_02', 's_03', 's_04', 's_05', 's_06', 's_07', 's_08']
+    test_split = ['s_03']
+    train_split = ['s_01', 's_02']
     subjects = train_split if split == "train" else test_split
      
     # left wrist, right wrist, left thigh, right thigh, head, pelvis
@@ -302,8 +302,8 @@ def process_dipimu(split="test"):
 def process_imuposer(split: str="train"):
     """Preprocess the IMUPoser dataset"""
 
-    train_split = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8']
-    test_split = ['P9', 'P10']
+    train_split = ['P1']
+    test_split = ['P2']
     subjects = train_split if split == "train" else test_split
 
     accs, oris, poses, trans = [], [], [], []
