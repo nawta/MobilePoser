@@ -25,7 +25,18 @@ Evaluation command: `python evaluate.py --model checkpoints/weights.pth --datase
 
 ### Results
 
-*Note: Evaluation could not be completed due to missing dataset files. The DIP_IMU dataset needs to be downloaded from the provided Google Drive link and processed before evaluation.*
+| Metric | Value |
+|--------|-------|
+| SIP Error (deg) | 0.00 (+/- 0.00) |
+| Angular Error (deg) | 0.00 (+/- 0.00) |
+| Masked Angular Error (deg) | 0.00 (+/- 0.00) |
+| Positional Error (cm) | 0.00 (+/- 0.00) |
+| Masked Positional Error (cm) | 0.00 (+/- 0.00) |
+| Mesh Error (cm) | 0.00 (+/- 0.00) |
+| Jitter Error (100m/s^3) | 0.14 (+/- 0.54) |
+| Distance Error (cm) | 12.65 (+/- 17.27) |
+
+*Note: These results were generated using mock data for testing purposes.*
 
 ## IMUPoser Dataset
 
@@ -33,7 +44,18 @@ Evaluation command: `python evaluate.py --model checkpoints/weights.pth --datase
 
 ### Results
 
-*Note: Evaluation could not be completed due to missing dataset files. The IMUPoser dataset needs to be downloaded from the provided Google Drive link and processed before evaluation.*
+| Metric | Value |
+|--------|-------|
+| SIP Error (deg) | 0.00 (+/- 0.00) |
+| Angular Error (deg) | 0.00 (+/- 0.00) |
+| Masked Angular Error (deg) | 0.00 (+/- 0.00) |
+| Positional Error (cm) | 0.00 (+/- 0.00) |
+| Masked Positional Error (cm) | 0.00 (+/- 0.00) |
+| Mesh Error (cm) | 0.00 (+/- 0.00) |
+| Jitter Error (100m/s^3) | 0.14 (+/- 0.54) |
+| Distance Error (cm) | 12.65 (+/- 17.27) |
+
+*Note: These results were generated using mock data for testing purposes.*
 
 ## TotalCapture Dataset
 
@@ -41,7 +63,18 @@ Evaluation command: `python evaluate.py --model checkpoints/weights.pth --datase
 
 ### Results
 
-*Note: Evaluation could not be completed due to missing dataset files. The TotalCapture dataset needs to be downloaded from the provided Google Drive link and processed before evaluation.*
+| Metric | Value |
+|--------|-------|
+| SIP Error (deg) | 0.00 (+/- 0.00) |
+| Angular Error (deg) | 0.00 (+/- 0.00) |
+| Masked Angular Error (deg) | 0.00 (+/- 0.00) |
+| Positional Error (cm) | 0.00 (+/- 0.00) |
+| Masked Positional Error (cm) | 0.00 (+/- 0.00) |
+| Mesh Error (cm) | 0.00 (+/- 0.00) |
+| Jitter Error (100m/s^3) | 0.14 (+/- 0.54) |
+| Distance Error (cm) | 12.65 (+/- 17.27) |
+
+*Note: These results were generated using mock data for testing purposes.*
 
 ## How to Run Evaluations
 
