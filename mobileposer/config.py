@@ -32,7 +32,7 @@ class paths:
     raw_amass = Path("/root/datasets/AMASS")           # TODO: replace with your path
     raw_dip = Path("/root/datasets/DIP_IMU")           # TODO: replace with your path
     raw_imuposer = Path("/root/datasets/imuposer_dataset")     # TODO: replace with your path
-    raw_nymeria = Path("/mnt/nas2/naoto/nymeria_dataset/data_recording_head_rwrist_lwrist")  # TODO: adjust path as needed
+    raw_nymeria = Path("/tmp/nymeria_test")  # Temporary test path
     eval_dir = root_dir / "datasets/processed_datasets/eval"
     processed_datasets = root_dir / "datasets/processed_datasets"
 
