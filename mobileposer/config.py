@@ -29,9 +29,10 @@ class paths:
     checkpoint = root_dir / "checkpoints"
     smpl_file = root_dir / "smpl/basicmodel_m.pkl"
     weights_file = root_dir / "checkpoints/weights.pth"
-    raw_amass = Path("/root/datasets/AMASS")           # TODO: replace with your path
-    raw_dip = Path("/root/datasets/DIP_IMU")           # TODO: replace with your path
-    raw_imuposer = Path("/root/datasets/imuposer_dataset")     # TODO: replace with your path
+    raw_amass = Path("/home/ubuntu/repos/MobilePoser/datasets/AMASS")  # AMASS dataset location
+    raw_dip = Path("/home/ubuntu/repos/MobilePoser/datasets/DIP_IMU")  # DIP_IMU dataset location
+    raw_imuposer = Path("/home/ubuntu/repos/MobilePoser/datasets/imuposer_dataset")  # IMUPoser dataset location
+    raw_nymeria = Path("/mnt/nas2/naoto/nymeria_dataset/data_recording_head_rwrist_lwrist")  # Nymeria dataset location
     eval_dir = root_dir / "datasets/processed_datasets/eval"
     processed_datasets = root_dir / "datasets/processed_datasets"
 
@@ -103,13 +104,15 @@ class datasets:
     test_datasets = {
         'dip': dip_test,
         'totalcapture': totalcapture,
-        'imuposer': imuposer_test
+        'imuposer': imuposer_test,
+        'nymeria': 'nymeria_test.pt'
     }
 
     # Finetune datasets
     finetune_datasets = {
         'dip': dip_train,
-        'imuposer': imuposer_train
+        'imuposer': imuposer_train,
+        'nymeria': 'nymeria_train.pt'
     }
 
     # AMASS datasets (add more as they become available in AMASS!)
@@ -117,6 +120,8 @@ class datasets:
                       'DanceDB', 'DFaust_67', 'EKUT', 'Eyes_Japan_Dataset', 'HUMAN4D',
                       'HumanEva', 'KIT', 'MPI_HDM05', 'MPI_Limits', 'MPI_mosh', 'SFU',
                       'SSM_synced', 'TCD_handMocap', 'TotalCapture', 'Transitions_mocap']
+    
+    nymeria_datasets = ['20230607_s0_james_johnson_act0_e72nhq']  # Add more sequences as available
 
     # Root-relative joint positions
     root_relative = False

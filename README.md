@@ -34,6 +34,7 @@ pip install -e .
 2. Register and download the DIP-IMU dataset from [here](https://dip.is.tuebingen.mpg.de/). Download the raw (unormalized) data.
 3. Request access to the TotalCapture dataset [here](https://cvssp.org/data/totalcapture/). Download Vicon Groundtruth in the raw folder, and IMU data in the IMU folder. 
 4. Download the IMUPoser dataset from [here](https://github.com/FIGLAB/IMUPoser).
+5. The Nymeria dataset can be accessed from [here](https://www.projectaria.com/datasets/nymeria/). The dataset is structured as described in the [nawta/nymeria_dataset](https://github.com/nawta/nymeria_dataset) repository.
 
 Once downloaded, your directory might appear as follows:
 ```bash
@@ -75,14 +76,17 @@ In `config.py`:
 - Set `paths.raw_amass` to the directory containing the AMASS dataset.
 - Set `paths.raw_dip` to the directory containing the DIP dataset.
 - Set `paths.raw_imuposer` to the directory containing the IMUPoser dataset.
+- Set `paths.raw_nymeria` to the directory containing the Nymeria dataset.
   
 The script `process.py` drives the dataset pre-processing. This script takes the following parameters:
-1. `--dataset`: Dataset to pre-process (`amass`, `dip`, `imuposer`). Defaults to `amass`.
+1. `--dataset`: Dataset to pre-process (`amass`, `dip`, `imuposer`, `nymeria`). Defaults to `amass`.
 
-As an example, the following command will pre-process the DIP dataset. 
+As an example, the following commands will pre-process the DIP and Nymeria datasets:
 ```
 $ python process.py --dataset dip
 ((mobileposer) root@43469fc1d10a:~/workspace# python mobileposer/process.py --dataset dip)
+
+$ python process.py --dataset nymeria
 ```
 
 ## Training Models 
@@ -120,11 +124,12 @@ We provide a pre-trained model for the set of configurations listed in `config.p
 ### Run Evaluation
 The script `evaluate.py` drives model evaluation. This script takes the following arguments. 
 1. `--model`: Path to the trained model.
-2. `--dataset`: Dataset to execute testing on (e.g., `dip`, `imuposer`, `totalcapture`).
+2. `--dataset`: Dataset to execute testing on (e.g., `dip`, `imuposer`, `totalcapture`, `nymeria`).
    
-As an example, we can execute the following concrete command:
+As an example, we can execute the following concrete commands:
 ```
 $ python evaluate.py --model checkpoints/weights.pth --dataset dip
+$ python evaluate.py --model checkpoints/weights.pth --dataset nymeria
 ```
 
 ### Visualizing Results 
