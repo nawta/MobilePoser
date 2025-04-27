@@ -346,18 +346,42 @@ def process_imuposer(split: str="train"):
 
 
 def process_nymeria(split="train"):
-    """Process Nymeria dataset for training and evaluation."""
+    """Process Nymeria dataset for training and evaluation.
+    
+    This function processes the Nymeria dataset, which contains XSens motion capture data,
+    and converts it into the format required by MobilePoser. The processing steps include:
+    1. Loading XSens motion data from .npz files
+    2. Converting quaternions to axis-angle representation
+    3. Downsampling from 240Hz to the target FPS
+    4. Aligning coordinate systems between Nymeria and SMPL
+    5. Synthesizing IMU accelerations and orientations
+    6. Computing foot-ground contact probabilities
+    7. Saving processed data in .pt format for training or evaluation
+    
+    Args:
+        split (str): Dataset split to process, either "train" or "test"
+    """
     def _foot_ground_probs(joint):
-        """Compute foot-ground contact probabilities."""
+        """Compute foot-ground contact probabilities based on foot movement.
+        
+        This function detects when feet are in contact with the ground by measuring
+        the distance between consecutive foot positions. Small movements indicate
+        the foot is likely in contact with the ground.
+        
+        Args:
+            joint: Tensor of joint positions
+            
+        Returns:
+            Tensor of foot contact probabilities (left and right feet)
+        """
         dist_lfeet = torch.norm(joint[1:, 10] - joint[:-1, 10], dim=1)
         dist_rfeet = torch.norm(joint[1:, 11] - joint[:-1, 11], dim=1)
-        lfoot_contact = (dist_lfeet < 0.008).int()
+        lfoot_contact = (dist_lfeet < 0.008).int()  # Threshold for contact detection
         rfoot_contact = (dist_rfeet < 0.008).int()
         lfoot_contact = torch.cat((torch.zeros(1, dtype=torch.int), lfoot_contact))
         rfoot_contact = torch.cat((torch.zeros(1, dtype=torch.int), rfoot_contact))
         return torch.stack((lfoot_contact, rfoot_contact), dim=1)
 
-    # enable skipping processed files
     try:
         processed = [fpath.name for fpath in (paths.processed_datasets).iterdir()]
     except FileNotFoundError:
@@ -367,7 +391,6 @@ def process_nymeria(split="train"):
     train_split = datasets.nymeria_datasets
     sequences = train_split if split == "train" else test_split
     
-    # Skip if already processed
     if f"nymeria_{split}.pt" in processed:
         print(f"Nymeria {split} dataset already processed. Skipping.")
         return
@@ -375,6 +398,7 @@ def process_nymeria(split="train"):
     data_pose, data_trans, data_beta, length = [], [], [], []
     print(f"\rReading Nymeria {split} dataset")
 
+    # Process each sequence in the dataset
     for seq_name in tqdm(sequences):
         try:
             seq_path = os.path.join(paths.raw_nymeria, seq_name)
@@ -391,6 +415,7 @@ def process_nymeria(split="train"):
                     xsens_npz_path = path
                     break
             
+            # Skip if no XSens data is found
             if xsens_npz_path is None:
                 print(f"XSens data not found for {seq_name}, skipping")
                 continue
@@ -414,9 +439,10 @@ def process_nymeria(split="train"):
                 pose = math.quaternion_to_axis_angle(quat)
                 
                 data_pose.append(pose.reshape(-1).numpy())
-                data_trans.append(trans[0].numpy())  # Use pelvis as root
-                data_beta.append(np.zeros(10))  # Use default shape
+                data_trans.append(trans[0].numpy())  # Use pelvis as root joint
+                data_beta.append(np.zeros(10))  # Use default SMPL shape parameters
                 
+            # Store the length of the sequence after downsampling
             length.append(len(range(0, len(q_wxyz), step)))
             
         except Exception as e:
@@ -437,39 +463,49 @@ def process_nymeria(split="train"):
         pose_smpl[:, i] = pose[:, i*3:(i+1)*3]
     
     nymeria_rot = torch.tensor([[[1, 0, 0], [0, 0, 1], [0, -1, 0.]]])
+    
+    # Transform translations
     tran = nymeria_rot.matmul(tran.unsqueeze(-1)).view_as(tran)
+    
     pose_smpl[:, 0] = math.rotation_matrix_to_axis_angle(
         nymeria_rot.matmul(math.axis_angle_to_rotation_matrix(pose_smpl[:, 0])))
 
     print("Synthesizing IMU accelerations and orientations")
-    b = 0
+    b = 0  # Base index for the current sequence
+    
     out_pose, out_shape, out_tran, out_joint, out_vrot, out_vacc, out_contact = [], [], [], [], [], [], []
+    
     for i, l in tqdm(list(enumerate(length))):
-        if l <= 12: b += l; print("\tdiscard one sequence with length", l); continue
+        if l <= 12: 
+            b += l
+            print("\tdiscard one sequence with length", l)
+            continue
+            
         p = math.axis_angle_to_rotation_matrix(pose_smpl[b:b + l]).view(-1, 24, 3, 3)
         
         grot, joint, vert = body_model.forward_kinematics(p, shape[i], tran[b:b + l], calc_mesh=True)
 
-        out_pose.append(p.clone())  # N, 24, 3, 3
-        out_tran.append(tran[b:b + l].clone())  # N, 3
-        out_shape.append(shape[i].clone())  # 10
-        out_joint.append(joint[:, :24].contiguous().clone())  # N, 24, 3
-        out_vacc.append(_syn_acc(vert[:, vi_mask]))  # N, 6, 3
-        out_contact.append(_foot_ground_probs(joint).clone()) # N, 2
+        out_pose.append(p.clone())                           # Pose as rotation matrices (N, 24, 3, 3)
+        out_tran.append(tran[b:b + l].clone())               # Global translation (N, 3)
+        out_shape.append(shape[i].clone())                   # SMPL shape parameters (10)
+        out_joint.append(joint[:, :24].contiguous().clone()) # Joint positions (N, 24, 3)
+        out_vacc.append(_syn_acc(vert[:, vi_mask]))          # Synthetic accelerations (N, 6, 3)
+        out_contact.append(_foot_ground_probs(joint).clone()) # Foot contact (N, 2)
 
-        out_vrot.append(grot[:, ji_mask])  # N, 6, 3, 3
+        out_vrot.append(grot[:, ji_mask])                    # Global rotations (N, 6, 3, 3)
         b += l
 
-    print("Saving...")
+    print("Saving processed data...")
     data = {
-        'joint': out_joint,
-        'pose': out_pose,
-        'shape': out_shape,
-        'tran': out_tran,
-        'acc': out_vacc,
-        'ori': out_vrot,
-        'contact': out_contact
+        'joint': out_joint,      # Joint positions
+        'pose': out_pose,        # Pose as rotation matrices
+        'shape': out_shape,      # SMPL shape parameters
+        'tran': out_tran,        # Global translations
+        'acc': out_vacc,         # Synthetic accelerations
+        'ori': out_vrot,         # Global rotations for IMU locations
+        'contact': out_contact   # Foot-ground contact probabilities
     }
+    
     data_path = paths.eval_dir / f"nymeria_{split}.pt" if split == "test" else paths.processed_datasets / f"nymeria_{split}.pt"
     torch.save(data, data_path)
     print(f"Processed Nymeria {split} dataset is saved at: {data_path}")

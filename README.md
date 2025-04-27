@@ -124,11 +124,12 @@ We provide a pre-trained model for the set of configurations listed in `config.p
 ### Run Evaluation
 The script `evaluate.py` drives model evaluation. This script takes the following arguments. 
 1. `--model`: Path to the trained model.
-2. `--dataset`: Dataset to execute testing on (e.g., `dip`, `imuposer`, `totalcapture`).
+2. `--dataset`: Dataset to execute testing on (e.g., `dip`, `imuposer`, `totalcapture`, `nymeria`).
    
-As an example, we can execute the following concrete command:
+As an example, we can execute the following concrete commands:
 ```
 $ python evaluate.py --model checkpoints/weights.pth --dataset dip
+$ python evaluate.py --model checkpoints/weights.pth --dataset nymeria
 ```
 
 ### Visualizing Results 
