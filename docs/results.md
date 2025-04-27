@@ -10,14 +10,14 @@ Evaluation command: `python evaluate.py --model checkpoints/weights.pth --datase
 
 | Metric | Value |
 |--------|-------|
-| SIP Error (deg) | 96.57 (+/- 26.99) |
-| Angular Error (deg) | 78.64 (+/- 22.83) |
-| Masked Angular Error (deg) | 96.57 (+/- 26.99) |
+| SIP Error (deg) | 97.28 (+/- 26.29) |
+| Angular Error (deg) | 79.59 (+/- 22.46) |
+| Masked Angular Error (deg) | 97.28 (+/- 26.29) |
 | Positional Error (cm) | 0.00 (+/- 0.00) |
 | Masked Positional Error (cm) | 0.00 (+/- 0.00) |
-| Mesh Error (cm) | 73.68 (+/- 26.17) |
+| Mesh Error (cm) | 74.66 (+/- 26.50) |
 | Jitter Error (100m/s^3) | 0.00 (+/- 0.00) |
-| Distance Error (cm) | 212.90 (+/- 79.12) |
+| Distance Error (cm) | 225.05 (+/- 92.22) |
 
 ## DIP_IMU Dataset
 
