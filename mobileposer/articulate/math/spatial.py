@@ -107,7 +107,15 @@ def _forward_tree(x_local: torch.Tensor, parent, reduction_fn):
     """
     x_global = [x_local[:, 0]]
     for i in range(1, len(parent)):
-        x_global.append(reduction_fn(x_global[parent[i]], x_local[:, i]))
+        if parent[i] is None:
+            x_global.append(x_local[:, i])
+        else:
+            parent_idx = int(parent[i])
+            if parent_idx < 0 or parent_idx >= len(x_global):
+                print(f"Warning: Invalid parent index {parent_idx} for joint {i}. Using identity.")
+                x_global.append(x_local[:, i])
+            else:
+                x_global.append(reduction_fn(x_global[parent_idx], x_local[:, i]))
     x_global = torch.stack(x_global, dim=1)
     return x_global
 

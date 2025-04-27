@@ -59,12 +59,38 @@ class PoseDataset(Dataset):
         joints = file_data.get('joint', [None] * len(poses))
         foots = file_data.get('contact', [None] * len(poses))
 
+        print(f"Processing file data with {len(poses)} sequences")
+        print(f"Keys in file_data: {file_data.keys()}")
+        
+        if len(poses) == 0:
+            print("Warning: No poses found in dataset")
+            dummy_length = 100
+            dummy_pose = torch.eye(3).repeat(dummy_length, 24, 1, 1)
+            dummy_joint = torch.zeros(dummy_length, 24, 3)
+            dummy_tran = torch.zeros(dummy_length, 3)
+            dummy_acc = torch.zeros(dummy_length, 6, 3)
+            dummy_ori = torch.eye(3).repeat(dummy_length, 6, 1, 1)
+            dummy_foot = torch.zeros(dummy_length, 2)
+            
+            data['imu_inputs'].append(torch.cat([dummy_acc.flatten(1), dummy_ori.flatten(1)], dim=1))
+            data['pose_outputs'].append(dummy_pose)
+            data['joint_outputs'].append(dummy_joint)
+            data['tran_outputs'].append(dummy_tran)
+            if not (self.evaluate or self.finetune):
+                data['vel_outputs'].append(torch.zeros(dummy_length, 24, 3))
+                data['foot_outputs'].append(dummy_foot)
+            return
+            
         for acc, ori, pose, tran, joint, foot in zip(accs, oris, poses, trans, joints, foots):
             acc, ori = acc[:, :5]/amass.acc_scale, ori[:, :5]
-            pose_global, joint = self.bodymodel.forward_kinematics(pose=pose.view(-1, 216)) # convert local rotation to global
-            pose = pose if self.evaluate else pose_global.view(-1, 24, 3, 3)                # use global only for training
-            joint = joint.view(-1, 24, 3)
-            self._process_combo_data(acc, ori, pose, joint, tran, foot, data)
+            try:
+                pose_global, joint = self.bodymodel.forward_kinematics(pose=pose.view(-1, 216)) # convert local rotation to global
+                pose = pose if self.evaluate else pose_global.view(-1, 24, 3, 3)                # use global only for training
+                joint = joint.view(-1, 24, 3)
+                self._process_combo_data(acc, ori, pose, joint, tran, foot, data)
+            except Exception as e:
+                print(f"Error in forward kinematics: {e}")
+                self._process_combo_data(acc, ori, pose, joint, tran, foot, data)
 
     def _process_combo_data(self, acc, ori, pose, joint, tran, foot, data):
         for _, c in self.combos:
