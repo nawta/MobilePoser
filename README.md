@@ -8,15 +8,15 @@ Author's implementation of the paper [MobilePoser: Real-Time Full-Body Pose Esti
 <br>
 
 ## Installation 
-We recommend configuring the project inside an Anaconda environment. We have tested everything using [Anaconda](https://docs.anaconda.com/anaconda/install/) version 23.9.0 and Python 3.9. The first step is to create a virtual environment, as shown below (named `mobileposer`).
+We recommend configuring the project inside an Anaconda environment. We have tested everything using [Anaconda](https://docs.anaconda.com/anaconda/install/) version 23.9.0 and Python 3.9. The first step is to create a virtual environment, as shown below (named `mobileposer310`).
 ```
-conda create -n mobileposer python=3.9
+conda create -n mobileposer310 python=3.10
 ```
 You should then activate the environment as shown below. All following operations must be completed within the virtual environment.
 ```
 (conda init)
 (source ~/.bashrc)
-conda activate mobileposer
+conda activate mobileposer310
 ```
 Then, install the required packages.
 ```
@@ -85,6 +85,8 @@ As an example, the following commands will pre-process the DIP and Nymeria datas
 ```
 $ python process.py --dataset dip
 ((mobileposer) root@43469fc1d10a:~/workspace# python mobileposer/process.py --dataset dip)
+
+$ PYTHONPATH=. python mobileposer/process.py --dataset nymeria
 
 $ python process.py --dataset nymeria
 ```
