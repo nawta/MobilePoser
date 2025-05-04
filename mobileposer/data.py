@@ -23,7 +23,25 @@ class PoseDataset(Dataset):
         self.finetune = finetune
         self.bodymodel = art.model.ParametricModel(paths.smpl_file)
         self.combos = list(amass.combos.items())
+        # デバイスタイプに基づいて有効なIMUインデックスを設定（process.pyの処理と一致させる）
+        # Ariaデバイスの場合：head (4), right wrist (1), left wrist (0)
+        # XSensデバイスの場合：すべて (0, 1, 2, 3, 4) が有効
+        self.imu_device = self._get_imu_device()
         self.data = self._prepare_dataset()
+
+    def _get_imu_device(self):
+        """データセットの特性に基づいてIMUデバイスタイプを推測"""
+        # Nymeriaデータセットの場合はファイル名から推測
+        if self.evaluate == 'nymeria' or self.finetune == 'nymeria':
+            # 学習/テストファイル名からデバイスタイプを取得
+            dataset_name = datasets.test_datasets.get('nymeria', '') if self.evaluate else \
+                          datasets.finetune_datasets.get('nymeria', '')
+            if 'aria' in dataset_name:
+                return 'aria'
+            elif 'xsens' in dataset_name:
+                return 'xsens'
+        # デフォルトではすべてのIMUを有効とする
+        return 'full'
 
     def _get_data_files(self, data_folder):
         if self.fold == 'train':
@@ -59,6 +77,18 @@ class PoseDataset(Dataset):
         joints = file_data.get('joint', [None] * len(poses))
         foots = file_data.get('contact', [None] * len(poses))
 
+        # Ensure orientation is in 3x3 rotation matrix form (shape: [..., 3, 3]).
+        # NOTE:Nymeria dataset stores orientation as quaternion (shape: [..., 4]).!! for the save
+        # Detect and convert to rotation matrix so that IMU feature size is consistent (9 dims per IMU).
+        if len(oris) > 0 and oris[0].dim() == 3 and oris[0].shape[-1] == 4:
+            # oris: list of tensors, each [T, N_imus, 4]
+            converted_oris = []
+            for q in oris:
+                T, N, _ = q.shape
+                rotm = art.math.quaternion_to_rotation_matrix(q.view(-1, 4)).view(T, N, 3, 3)
+                converted_oris.append(rotm)
+            oris = converted_oris
+
         print(f"Processing file data with {len(poses)} sequences")
         print(f"Keys in file_data: {file_data.keys()}")
         
@@ -93,6 +123,40 @@ class PoseDataset(Dataset):
                 self._process_combo_data(acc, ori, pose, joint, tran, foot, data)
 
     def _process_combo_data(self, acc, ori, pose, joint, tran, foot, data):
+        # Check for valid IMU data before processing
+        # Replace NaN values with zeros to ensure processing continues
+        acc_has_nan = torch.isnan(acc).any()
+        ori_has_nan = torch.isnan(ori).any()
+        
+        if acc_has_nan:
+            print("Warning: NaN values found in acceleration data, replacing with zeros")
+            acc = torch.nan_to_num(acc, nan=0.0)
+            
+        if ori_has_nan:
+            print("Warning: NaN values found in orientation data, replacing with zeros")
+            ori = torch.nan_to_num(ori, nan=0.0)
+        
+        # TODO: ここの場合分けちょっと怪しい．．．冗長すぎるかも.
+        # デバイスタイプに応じたIMUデータの検証
+        # 有効でないセンサーのインデックスをマスクしてチェック
+        if self.imu_device == 'aria':
+            # Ariaデバイスでは head(4), right wrist(1), left wrist(0) のみが有効
+            aria_imu_indices = [0, 1, 4]  # left wrist, right wrist, head
+            
+            # 有効なセンサーのいずれかが非ゼロかチェック
+            valid_data = False
+            for idx in aria_imu_indices:
+                if idx < acc.shape[1] and ((acc[:, idx] != 0).any() or (ori[:, idx] != 0).any()):
+                    valid_data = True
+                    break
+    
+            if not valid_data:
+                print("Warning: All valid Aria IMU values (left wrist, right wrist, head) are zero, this sequence may not be useful for training")
+        else:
+            # XSensまたはその他のデバイス：すべてのIMUを考慮
+            if (acc == 0).all() and (ori == 0).all():
+                print("Warning: All IMU values are zero, this sequence may not be useful for training")
+        
         for _, c in self.combos:
             # mask out layers for different subsets
             combo_acc = torch.zeros_like(acc)
@@ -128,21 +192,49 @@ class PoseDataset(Dataset):
             return imu, pose, joint, tran
 
         vel = self.data['vel_outputs'][idx].float()
-        contact = self.data['foot_outputs'][idx].float()
+        # R_Toe(idx=1)とL_Toe(idx=3)のみを選択
+        # Xsensのナンバー的に, foot_contacts->foot_outputsは"R_Foot" (index 17), "R_Toe" (index 18), "L_Foot" (index 21), and "L_Toe" (index 22) の順番だと思われる．要チェック．
+        foot_data = self.data['foot_outputs'][idx].float()
+        contact = torch.stack([foot_data[:, 1], foot_data[:, 3]], dim=1)
 
         return imu, pose, joint, tran, vel, contact
 
     def __len__(self):
-        return len(self.data['imu_inputs'])
+        # Check all output lists for length consistency
+        lens = [len(self.data[k]) for k in self.data]
+        if not all(l == lens[0] for l in lens):
+            print(f"[Warning] Inconsistent dataset lengths: {[f'{k}: {len(self.data[k])}' for k in self.data]}")
+        # If all lists are empty, print a warning
+        if lens[0] == 0:
+            print("[Warning] Dataset is empty in __len__ (all output lists length 0)")
+        return lens[0]
+
 
 def pad_seq(batch):
     """Pad sequences to same length for RNN."""
     def _pad(sequence):
+        # NaN値チェックと置換
+        for i, seq in enumerate(sequence):
+            if torch.isnan(seq).any():
+                sequence[i] = torch.nan_to_num(seq, nan=0.0)
+                
         padded = nn.utils.rnn.pad_sequence(sequence, batch_first=True)
         lengths = [seq.shape[0] for seq in sequence]
         return padded, lengths
 
+    # 入力データからNaNをチェック・除去
     inputs, poses, joints, trans = zip(*[(item[0], item[1], item[2], item[3]) for item in batch])
+    
+    # 各項目のNaNチェック
+    contains_nan = False
+    for data_type, data_list in [("inputs", inputs), ("poses", poses), ("joints", joints), ("trans", trans)]:
+        for i, item in enumerate(data_list):
+            if torch.isnan(item).any():
+                # NaNがあることをログに記録（実際の学習時にはどこで発生しているか確認できる）
+                print(f"NaN detected in {data_type}[{i}], replacing with zeros")
+                contains_nan = True
+    
+    # データパディング処理
     inputs, input_lengths = _pad(inputs)
     poses, pose_lengths = _pad(poses)
     joints, joint_lengths = _pad(joints)
@@ -154,6 +246,15 @@ def pad_seq(batch):
     if len(batch[0]) > 5: # include velocity and foot contact, if available
         vels, foots = zip(*[(item[4], item[5]) for item in batch])
 
+        # NaNチェック：velocity と foot_contact
+        for i, (vel, foot) in enumerate(zip(vels, foots)):
+            if torch.isnan(vel).any():
+                print(f"NaN detected in vels[{i}], replacing with zeros")
+                contains_nan = True
+            if torch.isnan(foot).any():
+                print(f"NaN detected in foots[{i}], replacing with zeros")
+                contains_nan = True
+
         # foot contact 
         foot_contacts, foot_contact_lengths = _pad(foots)
         outputs['foot_contacts'], output_lengths['foot_contacts'] = foot_contacts, foot_contact_lengths
@@ -161,6 +262,11 @@ def pad_seq(batch):
         # root velocities
         vels, vel_lengths = _pad(vels)
         outputs['vels'], output_lengths['vels'] = vels, vel_lengths
+
+    # すべてのデータをfloat32に統一して数値精度の問題を減らす
+    inputs = inputs.float()
+    for k in outputs:
+        outputs[k] = outputs[k].float()
 
     return (inputs, input_lengths), (outputs, output_lengths)
 
@@ -177,8 +283,32 @@ class PoseDataModule(L.LightningDataModule):
             train_size = int(0.9 * len(dataset))
             val_size = len(dataset) - train_size
             self.train_dataset, self.val_dataset = random_split(dataset, [train_size, val_size])
+            
+            # データセットのバリデーション
+            self._validate_dataset(self.train_dataset, "train")
+            self._validate_dataset(self.val_dataset, "validation")
+            
         elif stage == 'test':
             self.test_dataset = PoseDataset(fold='test', finetune=self.finetune)
+            self._validate_dataset(self.test_dataset, "test")
+
+    def _validate_dataset(self, dataset, name):
+        """データセットの内容を検証し、NaNなどの問題をチェック"""
+        nan_count = 0
+        total_samples = min(len(dataset), 1000)  # 最初の1000サンプルだけをチェック（時間短縮のため）
+        
+        for i in range(total_samples):
+            sample = dataset[i]
+            for j, item in enumerate(sample):
+                if torch.isnan(item).any():
+                    nan_count += 1
+                    print(f"Warning: NaN detected in {name} dataset, sample {i}, item {j}")
+                    break
+        
+        if nan_count > 0:
+            print(f"Warning: {nan_count} out of {total_samples} samples contain NaN values in {name} dataset")
+        else:
+            print(f"Dataset validation: No NaN values detected in {name} dataset sample")
 
     def _dataloader(self, dataset):
         return DataLoader(

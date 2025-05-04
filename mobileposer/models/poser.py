@@ -82,6 +82,7 @@ class Poser(L.LightningModule):
 
         # predict pose
         pose_input = torch.cat((noisy_joints, imu_inputs), dim=-1)
+        print(f"[DEBUG] pose_input shape: {pose_input.shape}")
         pose_p = self(pose_input, input_lengths)
 
         # compute pose loss

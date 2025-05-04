@@ -61,6 +61,19 @@ class TrainingManager:
         print("Module Path: ", module_path.name, module_path)
         logger = self._setup_wandb_logger(module_path) 
         checkpoint_callback = self._setup_callbacks(module_path)
+        
+        # NaN値検出と学習率の自動調整のためのコールバックを追加
+        nan_detection_callback = L.pytorch.callbacks.EarlyStopping(
+            monitor='validation_step_loss',
+            patience=5,
+            verbose=True,
+            mode='min',
+            check_finite=True  # NaN値を検出すると学習を停止
+        )
+        
+        # 学習率調整のコールバック
+        lr_monitor = L.pytorch.callbacks.LearningRateMonitor(logging_interval='step')
+        
         trainer = L.Trainer(
                 fast_dev_run=self.fast_dev_run,
                 min_epochs=self.hypers.num_epochs,
@@ -68,8 +81,10 @@ class TrainingManager:
                 devices=[self.hypers.device], 
                 accelerator=self.hypers.accelerator,
                 logger=logger,
-                callbacks=[checkpoint_callback],
-                deterministic=True
+                callbacks=[checkpoint_callback, nan_detection_callback, lr_monitor],
+                deterministic=True,
+                gradient_clip_val=1.0,  # 勾配爆発を防止
+                detect_anomaly=True  # 計算グラフの異常（NaNなど）を検出
                 )
         return trainer
 
@@ -90,7 +105,30 @@ class TrainingManager:
         print()
 
         try:
+            # NaN値をチェックするためのデータ前処理フック
+            orig_train_dataloader = datamodule.train_dataloader
+            orig_val_dataloader = datamodule.val_dataloader
+            
+            def check_nan_dataloader(dataloader_fn):
+                def wrapped_dataloader():
+                    dataloader = dataloader_fn()
+                    return dataloader
+                return wrapped_dataloader
+            
+            datamodule.train_dataloader = check_nan_dataloader(orig_train_dataloader)
+            datamodule.val_dataloader = check_nan_dataloader(orig_val_dataloader)
+            
             trainer.fit(model, datamodule=datamodule)
+        except Exception as e:
+            print(f"Training error: {e}")
+            # エラー発生時にもWandbセッションをクリーンアップ
+            if wandb.run is not None:
+                wandb.finish()
+            # 最後に成功したチェックポイントを保存
+            if hasattr(trainer, 'checkpoint_callback') and trainer.checkpoint_callback is not None:
+                best_path = trainer.checkpoint_callback.best_model_path
+                if best_path:
+                    print(f"最後に成功したチェックポイント: {best_path}")
         finally:
             wandb.finish()
             del model

@@ -7,10 +7,10 @@ class train_hypers:
     """Hyperparameters for training."""
     batch_size = 256
     num_workers = 8
-    num_epochs = 60
+    num_epochs = 5
     accelerator = "gpu"
     device = 0
-    lr = 1e-3
+    lr = 5e-4
 
 
 class finetune_hypers:
@@ -26,13 +26,13 @@ class finetune_hypers:
 class paths:
     """Relevant paths for MobilePoser. Change as necessary."""
     root_dir = Path().absolute()
-    checkpoint = root_dir / "checkpoints"
-    smpl_file = root_dir / "smpl/basicmodel_m.pkl"
-    weights_file = root_dir / "checkpoints/weights.pth"
+    checkpoint = root_dir / "mobileposer/checkpoints"
+    smpl_file = root_dir / "mobileposer/smpl/basicmodel_m.pkl"
+    weights_file = root_dir / "mobileposer/checkpoints/weights.pth"
     raw_amass = Path("/mnt/nas2/naoto/mobileposer_dataset/AMASS")  # AMASS dataset location
     raw_dip = Path("/mnt/nas2/naoto/mobileposer_dataset/DIP_IMU")  # DIP_IMU dataset location
     raw_imuposer = Path("/mnt/nas2/naoto/mobileposer_dataset/imuposer_dataset")  # IMUPoser dataset location
-    raw_nymeria = Path("/mnt/nas2/naoto/nymeria_dataset/data_recording_head_rwrist_lwrist")  # Nymeria dataset location
+    raw_nymeria = Path("/mnt/nas2/naoto/nymeria_dataset/data_recording_head_rwrist_lwrist_and_body_motion")  # Nymeria dataset location
     eval_dir = root_dir / "datasets/processed_datasets/eval"
     processed_datasets = root_dir / "datasets/processed_datasets"
 

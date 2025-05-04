@@ -1,13 +1,13 @@
 import os
 import numpy as np
-import pickle
 import torch
 from argparse import ArgumentParser
 from tqdm import tqdm
 import glob
 import sys
+from pathlib import Path
 
-sys.path.append('/home/ubuntu/repos/nymeria_dataset')
+sys.path.append('/home/naoto/docker_workspace/nymeria_dataset')
 from nymeria.xsens_constants import XSensConstants
 
 from mobileposer.articulate.model import ParametricModel
@@ -345,133 +345,379 @@ def process_imuposer(split: str="train"):
     torch.save(data, data_path)
 
 
-def process_nymeria(split="train"):
-    """Process Nymeria dataset for training and evaluation.
-    
-    This function processes the Nymeria dataset, which contains XSens motion capture data,
-    and converts it into the format required by MobilePoser. The processing steps include:
-    1. Loading XSens motion data from .npz files
-    2. Converting quaternions to axis-angle representation
-    3. Downsampling from 240Hz to the target FPS
-    4. Aligning coordinate systems between Nymeria and SMPL
-    5. Synthesizing IMU accelerations and orientations
-    6. Computing foot-ground contact probabilities
-    7. Saving processed data in .pt format for training or evaluation
-    
-    Args:
-        split (str): Dataset split to process, either "train" or "test"
+def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_sequences: int = -1, imu_device: str = "aria"):
     """
-    def _foot_ground_probs(joint):
-        """Compute foot-ground contact probabilities based on foot movement.
-        
-        This function detects when feet are in contact with the ground by measuring
-        the distance between consecutive foot positions. Small movements indicate
-        the foot is likely in contact with the ground.
-        
-        Args:
-            joint: Tensor of joint positions
-            
-        Returns:
-            Tensor of foot contact probabilities (left and right feet)
-        """
-        dist_lfeet = torch.norm(joint[1:, 10] - joint[:-1, 10], dim=1)
-        dist_rfeet = torch.norm(joint[1:, 11] - joint[:-1, 11], dim=1)
-        lfoot_contact = (dist_lfeet < 0.008).int()  # Threshold for contact detection
-        rfoot_contact = (dist_rfeet < 0.008).int()
-        lfoot_contact = torch.cat((torch.zeros(1, dtype=torch.int), lfoot_contact))
-        rfoot_contact = torch.cat((torch.zeros(1, dtype=torch.int), rfoot_contact))
-        return torch.stack((lfoot_contact, rfoot_contact), dim=1)
+    Preprocess the Nymeria dataset and export it in the same AMASS-compatible
+    structure that the other *process_* utilities in this file produce.
 
+    Parameters
+    ----------
+    resume : bool, default True
+        When True the function keeps appending to the previously written
+        nymeria_train.pt / nymeria_test.pt files so that the preprocessing can
+        be resumed.  When False those files are deleted and the whole dataset
+        is regenerated.
+    contact_logic : {"xdata", "amass"}, default "xdata"
+        "xdata" – use the `foot_contacts` attribute stored in the XSens npz.
+        "amass" – ignore that attribute and infer foot contact with the AMASS
+        heuristic (frame-to-frame foot displacement < 0.8 cm).
+    max_sequences : int, default -1
+        Number of sequences to process. If < 0, process all sequences.
+    imu_device : {"aria", "xsens"}, default "aria"
+        "aria" – use IMU data from Aria device (head, rwrist, lwrist).
+        "xsens" – use IMU data from XSens (left wrist, right wrist, left thigh, right thigh, head, pelvis).
+    """
+    # ------------------------------------------------------------------
+    # Imports (local to avoid slowing down CLI start-up for other datasets)
+    # ------------------------------------------------------------------
+    import os, glob, numpy as np, torch
+    from pathlib import Path
+    from tqdm import tqdm
+
+    from nymeria.data_provider import NymeriaDataProvider
+    from nymeria.xsens_constants import XSensConstants
+    from projectaria_tools.core.sensor_data import TimeDomain, TimeQueryOptions
+    from projectaria_tools.core.stream_id import StreamId
+
+    from mobileposer.articulate.model import ParametricModel
+    from mobileposer.articulate.math.angular import quaternion_to_rotation_matrix
+    from mobileposer.config import paths
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    TARGET_FPS = 30  # keep consistent with the other datasets
+
+    def _foot_ground_probs(joint_sequence: torch.Tensor) -> torch.Tensor:
+        """AMASS-style foot contact detection (distance threshold)."""
+        dist_l = torch.norm(joint_sequence[1:, 10] - joint_sequence[:-1, 10], dim=1)
+        dist_r = torch.norm(joint_sequence[1:, 11] - joint_sequence[:-1, 11], dim=1)
+        l_fc = (dist_l < 0.008).int()
+        r_fc = (dist_r < 0.008).int()
+        # prepend one zero so that length matches T
+        l_fc = torch.cat((torch.zeros(1, dtype=torch.int32), l_fc))
+        r_fc = torch.cat((torch.zeros(1, dtype=torch.int32), r_fc))
+        return torch.stack((l_fc, r_fc), dim=1)  # (T, 2)
+
+    # Mapping: XSens segment name –> SMPL joint index
+    seg2smpl = {
+        "Pelvis": 0,
+        "L5": 3,
+        "L3": 6,
+        "T12": 9,
+        "T8": 12,
+        "Neck": 12,  # same as T8/neck for safety
+        "Head": 15,
+        "R_Shoulder": 14,
+        "R_UpperArm": 17,
+        "R_Forearm": 19,
+        "R_Hand": 21,
+        "L_Shoulder": 13,
+        "L_UpperArm": 16,
+        "L_Forearm": 18,
+        "L_Hand": 20,
+        "R_UpperLeg": 2,
+        "R_LowerLeg": 5,
+        "R_Foot": 8,
+        "R_Toe": 11,
+        "L_UpperLeg": 1,
+        "L_LowerLeg": 4,
+        "L_Foot": 7,
+        "L_Toe": 10,
+    }
+    segname2idx = {n: i for i, n in enumerate(XSensConstants.part_names)}
+    smpl_to_seg = torch.full((24,), -1, dtype=torch.long)
+    for seg_name, smpl_idx in seg2smpl.items():
+        if seg_name in segname2idx:
+            smpl_to_seg[smpl_idx] = segname2idx[seg_name]
+
+    # ------------------------------------------------------------------
+    # Prepare output containers & resume if requested
+    # ------------------------------------------------------------------
+    # ファイル名にIMUデバイスとcontact_logicを含める
+    device_suffix = f"_{imu_device}"
+    contact_suffix = f"_{contact_logic}"
+    train_path = paths.processed_datasets / f"nymeria{device_suffix}{contact_suffix}_train.pt"
+    test_path = paths.eval_dir / f"nymeria{device_suffix}{contact_suffix}_test.pt"
+
+    def _empty_container():
+        return {k: [] for k in [
+            "joint", "pose", "shape", "tran", "acc", "ori", "contact"]}
+
+    train_data = _empty_container()
+    test_data = _empty_container()
+    processed_idxs: set[int] = set()
+
+    if resume:
+        if train_path.exists():
+            buf = torch.load(train_path)
+            for k in train_data:
+                train_data[k] = buf.get(k, [])
+            processed_idxs.update(range(len(train_data["joint"])))
+            print(f"[Resume] loaded {len(train_data['joint'])} training sequences.")
+        if test_path.exists():
+            buf = torch.load(test_path)
+            for k in test_data:
+                test_data[k] = buf.get(k, [])
+            processed_idxs.add(len(processed_idxs))
+            print(f"[Resume] loaded {len(test_data['joint'])} testing sequences.")
+    else:
+        train_path.unlink(missing_ok=True)
+        test_path.unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------
+    # Iterate over recordings ------------------------------------------------
+    # ------------------------------------------------------------------
+    smpl_model = ParametricModel(paths.smpl_file)  # one global instance
+    parent = smpl_model.parent
+
+    seq_dirs = sorted(glob.glob(os.path.join(str(paths.raw_nymeria), "*")))
+    num_train = int(len(seq_dirs) * 0.9)
+
+    def _save():
+        os.makedirs(paths.processed_datasets, exist_ok=True)
+        os.makedirs(paths.eval_dir, exist_ok=True)
+        torch.save(train_data, train_path)
+        torch.save(test_data, test_path)
+        print("[AutoSave] progress written to disk.")
+
+    processed_count = 0
     try:
-        processed = [fpath.name for fpath in (paths.processed_datasets).iterdir()]
-    except FileNotFoundError:
-        processed = []
+        for seq_idx, seq_dir in enumerate(tqdm(seq_dirs, desc="Nymeria")):
+            if seq_idx in processed_idxs:
+                continue
+            if max_sequences > 0 and processed_count >= max_sequences:
+                print(f"Reached max_sequences ({max_sequences}). Stopping early.")
+                break
 
-    if f"nymeria_{split}.pt" in processed:
-        print(f"Nymeria {split} dataset already processed. Skipping.")
+            # --------------------------------------------------------------
+            # Load Nymeria sequence
+            # --------------------------------------------------------------
+            try:
+                dp = NymeriaDataProvider(sequence_rootdir=Path(seq_dir))
+                body_dp = dp.body_dp
+                head_p, lw_p, rw_p = dp.recording_head, dp.recording_lwrist, dp.recording_rwrist
+            except RuntimeError as e:
+                print(f"[Warning] Skipping sequence due to error in NymeriaDataProvider: {seq_dir}\n  {e}")
+                continue
+
+            # XSens arrays
+            xs_q = body_dp.xsens_data[XSensConstants.k_part_qWXYZ].reshape(-1, XSensConstants.num_parts, 4)
+            xs_t = body_dp.xsens_data[XSensConstants.k_part_tXYZ].reshape(-1, XSensConstants.num_parts, 3)
+            xs_ts = body_dp.xsens_data[XSensConstants.k_timestamps_us]  # μs
+            xs_fc = body_dp.xsens_data.get(XSensConstants.k_foot_contacts, None)
+
+            # Build timestamp query grid (ns)
+            t_start, t_end = dp.timespan_ns
+            step_ns = int(1e9 / TARGET_FPS)
+            query_ns = np.arange(t_start, t_end, step_ns, dtype=np.int64)
+
+            # Per-frame containers
+            joint_seq, pose_seq, tran_seq = [], [], []
+            contact_seq: list[torch.Tensor] = []  # (2,) int each
+            ori_frames: list[np.ndarray] = []  # (6?,4)
+            acc_frames: list[np.ndarray] = []
+            betas = torch.zeros(10)
+
+            # Helper to fetch IMU samples (unchanged from original implementation)
+            def _imu_at(provider, stream_id: str, t_ns: int):
+                if provider is None or provider.vrs_dp is None:
+                    return np.zeros(4), np.zeros(3)  # NaN ではなく 0 を返す
+                try:
+                    imu, _ = provider.vrs_dp.get_imu_data_by_time_ns(
+                        StreamId(stream_id), time_ns=int(t_ns),
+                        time_domain=TimeDomain.TIME_CODE,
+                        time_query_options=TimeQueryOptions.CLOSEST,
+                    )
+                    q = np.array([imu.w, imu.x, imu.y, imu.z], dtype=np.float32)
+                    acc = np.array([imu.ax, imu.ay, imu.az], dtype=np.float32)
+                    return q, acc
+                except Exception:
+                    return np.zeros(4), np.zeros(3)  # NaN ではなく 0 を返す
+
+            for t_ns in query_ns:
+                # ------------------------------------------------------
+                # XSens frame selection (closest)
+                # ------------------------------------------------------
+                t_us = int(t_ns // 1000)
+                ridx = np.searchsorted(xs_ts, t_us)
+                if ridx == len(xs_ts):
+                    ridx -= 1
+                if ridx > 0 and abs(xs_ts[ridx] - t_us) > abs(xs_ts[ridx - 1] - t_us):
+                    ridx -= 1
+
+                part_q = xs_q[ridx]  # (23,4)
+                part_t = xs_t[ridx]  # (23,3)
+
+                # Global rotations for the 24 SMPL joints -----------------
+                R_global = torch.eye(3).repeat(24, 1, 1)
+                for j in range(24):
+                    seg_index = smpl_to_seg[j].item()
+                    if seg_index >= 0:
+                        R_global[j] = quaternion_to_rotation_matrix(
+                            torch.from_numpy(part_q[seg_index]).float().unsqueeze(0)
+                        )[0]
+
+                # Convert to local rotations
+                R_local = smpl_model.inverse_kinematics_R(R_global.unsqueeze(0))[0]
+                pose_seq.append(R_local.unsqueeze(0))
+
+                # Joint positions & root translation ---------------------
+                joint_pos = torch.zeros(24, 3)
+                for j in range(24):
+                    seg_index = smpl_to_seg[j].item()
+                    if seg_index >= 0:
+                        joint_pos[j] = torch.from_numpy(part_t[seg_index]).float()
+                joint_seq.append(joint_pos)
+                tran_seq.append(joint_pos[0].unsqueeze(0))
+
+                # Foot contact -------------------------------------------
+                if contact_logic == "xdata" and xs_fc is not None:
+                    contact_seq.append(torch.from_numpy(xs_fc[ridx]).int())
+                else:
+                    # placeholder; computed later
+                    contact_seq.append(None)
+
+                # IMU ----------------------------------------------------
+                if imu_device == "aria":
+                    qhL, ahL = _imu_at(head_p, "1202-2", t_ns)
+                    qhR, ahR = _imu_at(head_p, "1202-1", t_ns)
+                    qlw, alw = _imu_at(lw_p, "1202-2", t_ns)
+                    qrw, arw = _imu_at(rw_p, "1202-1", t_ns)
+                    ori_frames.append(np.stack([qhL, qhR, qlw, qrw], 0))
+                    acc_frames.append(np.stack([ahL, ahR, alw, arw], 0))
+                elif imu_device == "xsens":
+                    # XSensデータからIMU情報を抽出
+                    imu_num = 6
+                    acc_amass = np.zeros((1, imu_num, 3), dtype=np.float32)
+                    ori_amass = np.zeros((1, imu_num, 4), dtype=np.float32)
+                    
+                    # XSensデータからIMU抽出（各フレームごとに処理）
+                    # order mapping: left wrist, right wrist, left thigh, right thigh, head, pelvis
+                    # XSensの部位IDマップ（例: left_wrist -> 15, right_wrist -> 18）
+                    xsens_mapping = {
+                        0: 15,  # left wrist
+                        1: 18,  # right wrist
+                        2: 4,   # left thigh
+                        3: 7,   # right thigh
+                        4: 19,  # head
+                        5: 0,   # pelvis
+                    }
+                    
+                    for amass_idx, xsens_idx in xsens_mapping.items():
+                        if xsens_idx < len(xs_q[ridx]):
+                            # クォータニオン
+                            ori_amass[0, amass_idx] = xs_q[ridx][xsens_idx]
+                            
+                            # 加速度データ - XSensデータにない場合は推定
+                            if xsens_idx < len(part_t) and len(ori_frames) > 0 and len(ori_frames) < len(query_ns) - 1:
+                                # 前後の位置から加速度を計算
+                                prev_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames)-1] // 1000))
+                                next_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames)+1] // 1000))
+                                if prev_idx >= len(xs_t) or next_idx >= len(xs_t):
+                                    acc_amass[0, amass_idx] = np.zeros(3)
+                                else:
+                                    prev_pos = xs_t[prev_idx][xsens_idx] if xsens_idx < len(xs_t[prev_idx]) else np.zeros(3)
+                                    curr_pos = xs_t[ridx][xsens_idx] if xsens_idx < len(xs_t[ridx]) else np.zeros(3)
+                                    next_pos = xs_t[next_idx][xsens_idx] if xsens_idx < len(xs_t[next_idx]) else np.zeros(3)
+                                    # 2次微分で加速度計算
+                                    acc = (next_pos + prev_pos - 2 * curr_pos) * (30 ** 2)  # 30FPSと仮定
+                                    acc_amass[0, amass_idx] = acc
+                
+                    ori_frames.append(ori_amass)
+                    acc_frames.append(acc_amass)
+
+            # --------------------------------------------------------------
+            # Finalise per-sequence tensors
+            # --------------------------------------------------------------
+            joints_tensor = torch.stack(joint_seq)  # (T,24,3)
+            poses_tensor = torch.cat(pose_seq, dim=0)  # (T,24,3,3)
+            trans_tensor = torch.cat(tran_seq, dim=0)  # (T,3)
+
+            if contact_logic == "amass":
+                contacts_tensor = _foot_ground_probs(joints_tensor)
+            else:
+                contacts_tensor = torch.stack([c if c is not None else torch.zeros(2, dtype=torch.int32)
+                                               for c in contact_seq])
+
+            # Map Nymeria-available IMUs (head_r / wrist etc.) into AMASS order
+            T = len(ori_frames)
+            acc_np = np.array(acc_frames, dtype=np.float32)  # (T,4,3)
+            ori_np = np.array(ori_frames, dtype=np.float32)  # (T,4,4)
+
+            # NaN値のチェックと修正
+            acc_np = np.nan_to_num(acc_np, nan=0.0)
+            ori_np = np.nan_to_num(ori_np, nan=0.0)
+            
+            imu_num = 6
+            acc_amass = np.zeros((T, imu_num, 3), dtype=np.float32)
+            ori_amass = np.zeros((T, imu_num, 4), dtype=np.float32)
+            # order mapping: left wrist, right wrist, left thigh, right thigh, head, pelvis
+            if imu_device == "aria":
+                acc_amass[:, 1] = acc_np[:, 3]  # right wrist
+                acc_amass[:, 0] = acc_np[:, 2]  # left wrist
+                acc_amass[:, 4] = acc_np[:, 1]  # head (use right head IMU)
+                ori_amass[:, 1] = ori_np[:, 3]
+                ori_amass[:, 0] = ori_np[:, 2]
+                ori_amass[:, 4] = ori_np[:, 1]
+                # missing thighs / pelvis remain zeros
+            elif imu_device == "xsens":
+                # XSensデータからIMU情報を抽出
+                # order mapping: left wrist, right wrist, left thigh, right thigh, head, pelvis
+                # XSensの部位IDマップ（例: left_wrist -> 15, right_wrist -> 18）
+                xsens_mapping = {
+                    0: 15,  # left wrist
+                    1: 18,  # right wrist
+                    2: 4,   # left thigh
+                    3: 7,   # right thigh
+                    4: 19,  # head
+                    5: 0,   # pelvis
+                }
+                
+                for amass_idx, xsens_idx in xsens_mapping.items():
+                    acc_amass[:, amass_idx] = acc_np[:, xsens_idx]
+                    ori_amass[:, amass_idx] = ori_np[:, xsens_idx]
+
+            sample = {
+                "joint": joints_tensor,
+                "pose": poses_tensor,
+                "shape": betas,
+                "tran": trans_tensor,
+                "acc": torch.from_numpy(acc_amass),
+                "ori": torch.from_numpy(ori_amass),
+                "contact": contacts_tensor,
+            }
+
+            # データにNaNがないかチェック
+            has_nan = False
+            for k, v in sample.items():
+                if torch.isnan(v).any():
+                    print(f"Warning: NaN detected in '{k}' for sequence {seq_idx}")
+                    has_nan = True
+                    break
+            
+            if has_nan:
+                print(f"Skipping sequence {seq_idx} due to NaN values")
+                continue
+
+            if seq_idx < num_train:
+                for k in train_data:
+                    train_data[k].append(sample[k])
+            else:
+                for k in test_data:
+                    test_data[k].append(sample[k])
+
+            processed_idxs.add(seq_idx)
+            processed_count += 1
+            _save()
+
+    except KeyboardInterrupt:
+        print("\n[Interrupted] Saving progress…")
+        _save()
         return
 
-    print(f"\rReading Nymeria {split} dataset")
-    
-    print("Creating synthetic Nymeria dataset for testing...")
-    
-    num_frames = 100
-    num_parts = 23  # XSens number of parts
-    
-    # Create random poses and translations
-    data_pose = []
-    data_trans = []
-    data_beta = []
-    
-    for i in range(num_frames):
-        quat = torch.randn(num_parts, 4)
-        quat = quat / torch.norm(quat, dim=1, keepdim=True)  # Normalize quaternions
-        
-        # Convert quaternions to axis-angle representation
-        pose = math.quaternion_to_axis_angle(quat)
-        
-        data_pose.append(pose.reshape(-1).numpy())
-        data_trans.append(np.random.randn(3))  # Random translation
-        data_beta.append(np.zeros(10))  # Default SMPL shape parameters
-    
-    length = torch.tensor([num_frames], dtype=torch.int)
-    shape = torch.tensor(np.asarray(data_beta, np.float32))
-    tran = torch.tensor(np.asarray(data_trans, np.float32))
-    pose = torch.tensor(np.asarray(data_pose, np.float32)).view(-1, num_parts*3)
-    
-    pose_smpl = torch.zeros((pose.shape[0], 24, 3), dtype=torch.float32)
-    for i in range(min(num_parts, 24)):
-        pose_smpl[:, i] = pose[:, i*3:(i+1)*3]
-    
-    nymeria_rot = torch.tensor([[[1, 0, 0], [0, 0, 1], [0, -1, 0.]]])
-    
-    # Transform translations
-    tran = nymeria_rot.matmul(tran.unsqueeze(-1)).view_as(tran)
-    
-    # Transform root orientation
-    pose_smpl[:, 0] = math.rotation_matrix_to_axis_angle(
-        nymeria_rot.matmul(math.axis_angle_to_rotation_matrix(pose_smpl[:, 0])))
-
-    print("Synthesizing IMU accelerations and orientations")
-    
-    out_pose, out_shape, out_tran, out_joint, out_vrot, out_vacc, out_contact = [], [], [], [], [], [], []
-    
-    # Process the synthetic sequence
-    p = math.axis_angle_to_rotation_matrix(pose_smpl).view(-1, 24, 3, 3)
-    
-    print(f"body_model.parent: {body_model.parent}")
-    print(f"p.shape: {p.shape}")
-    print(f"shape[0].shape: {shape[0].shape}")
-    print(f"tran.shape: {tran.shape}")
-    
-    grot = torch.zeros((p.shape[0], 24, 3, 3))
-    joint = torch.zeros((p.shape[0], 24, 3))
-    vert = torch.zeros((p.shape[0], 6890, 3))
-    
-    # grot, joint, vert = body_model.forward_kinematics(p, shape[0], tran, calc_mesh=True)
-
-    out_pose.append(p.clone())                           # Pose as rotation matrices (N, 24, 3, 3)
-    out_tran.append(tran.clone())                        # Global translation (N, 3)
-    out_shape.append(shape[0].clone())                   # SMPL shape parameters (10)
-    out_joint.append(joint[:, :24].contiguous().clone()) # Joint positions (N, 24, 3)
-    out_vacc.append(_syn_acc(vert[:, vi_mask]))          # Synthetic accelerations (N, 6, 3)
-    out_contact.append(_foot_ground_probs(joint).clone()) # Foot contact (N, 2)
-    out_vrot.append(grot[:, ji_mask])                    # Global rotations (N, 6, 3, 3)
-
-    print("Saving processed data...")
-    data = {
-        'joint': out_joint,      # Joint positions
-        'pose': out_pose,        # Pose as rotation matrices
-        'shape': out_shape,      # SMPL shape parameters
-        'tran': out_tran,        # Global translations
-        'acc': out_vacc,         # Synthetic accelerations
-        'ori': out_vrot,         # Global rotations for IMU locations
-        'contact': out_contact   # Foot-ground contact probabilities
-    }
-    
-    data_path = paths.eval_dir / f"nymeria_{split}.pt" if split == "test" else paths.processed_datasets / f"nymeria_{split}.pt"
-    torch.save(data, data_path)
-    print(f"Processed Nymeria {split} dataset is saved at: {data_path}")
+    _save()
+    print(f"Finished Nymeria preprocessing → {train_path} & {test_path}")
 
 
 def create_directories():
@@ -481,7 +727,11 @@ def create_directories():
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--dataset", default="amass")
+    parser.add_argument("--dataset", type=str, required=True)
+    parser.add_argument("--restart", action="store_true", help="Start preprocessing from scratch (do not resume)")
+    parser.add_argument("--max-sequences", type=int, default=-1, help="Number of sequences to process (default: all)")
+    parser.add_argument("--contact-logic", type=str, default="xdata", help="Contact logic for Nymeria")
+    parser.add_argument("--imu-device", type=str, default="aria", choices=["aria", "xsens"], help="IMU device to use for Nymeria")
     args = parser.parse_args()
 
     # create dataset directories
@@ -499,7 +749,6 @@ if __name__ == "__main__":
         process_dipimu(split="train")
         process_dipimu(split="test")
     elif args.dataset == "nymeria":
-        process_nymeria(split="train")
-        process_nymeria(split="test")
+        process_nymeria(resume=not args.restart, max_sequences=args.max_sequences, contact_logic=args.contact_logic, imu_device=args.imu_device)
     else:
         raise ValueError(f"Dataset {args.dataset} not supported.")
