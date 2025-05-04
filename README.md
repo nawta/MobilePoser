@@ -80,16 +80,28 @@ In `config.py`:
   
 The script `process.py` drives the dataset pre-processing. This script takes the following parameters:
 1. `--dataset`: Dataset to pre-process (`amass`, `dip`, `imuposer`, `nymeria`). Defaults to `amass`.
+2. `--restart`: Start preprocessing from scratch (do not resume from previous progress).
+3. `--max_sequences`: Number of sequences to process (default: all sequences). If not specified or set to -1, all sequences will be processed. This is useful for debugging or partial dataset generation.
+4. `--imu-device`: IMU device to use for Nymeria dataset processing (`aria` or `xsens`). Defaults to `aria`. Only applicable when `--dataset nymeria` is selected.
+5. `--contact-logic`: Contact logic to use for Nymeria dataset processing (e.g., `xdata`, `legacy`). Defaults to `xdata`. Only applicable when `--dataset nymeria` is selected. `legacy` is the contact logic used in the original implementation of preprocess AMASS dataset.
 
 As an example, the following commands will pre-process the DIP and Nymeria datasets:
 ```
-$ python process.py --dataset dip
-((mobileposer) root@43469fc1d10a:~/workspace# python mobileposer/process.py --dataset dip)
-
 $ PYTHONPATH=. python mobileposer/process.py --dataset nymeria
-
-$ python process.py --dataset nymeria
+$ PYTHONPATH=. python mobileposer/process.py --dataset dip
+$ PYTHONPATH=. python mobileposer/process.py --dataset nymeria --imu-device aria --contact-logic xdata
+$ PYTHONPATH=. python mobileposer/process.py --dataset nymeria --imu-device xsens --contact-logic legacy
+$ PYTHONPATH=. python mobileposer/process.py --dataset nymeria --max_sequences 10 --imu-device xsens  # Only process 10 sequences (for debug)
 ```
+
+#### Nymeria IMU Device Selection & Output Naming
+When processing the Nymeria dataset, you can select the IMU data source using the `--imu-device` option:
+- `aria`: Uses head, right wrist, and left wrist IMU values (default).
+- `xsens`: Uses six IMU values (left wrist, right wrist, left thigh, right thigh, head, pelvis).
+
+The output files generated will include the selected IMU device and contact logic in their filenames, e.g., `nymeria_xsens_xdata_train.pt`.
+
+All missing IMU values are handled robustly: any NaN values are replaced with 0 during processing.
 
 ## Training Models 
 The script `train.py` drives the training process. This script takes the following parameters:
@@ -115,8 +127,7 @@ To run this script, use the following syntax:
 ```
 $ python combine_weights.py --finetune <dataset-name> --checkpoint <checkpoint-directory>
 ```
-Omit the `--finetune` argument if you did not finetune. The resulting weight file will be stored under the same directory as the `checkpoint-directory>`
-
+Omit the `--finetune` argument if you did not finetune. The resulting weight file will be stored under the same directory as the `checkpoint-directory`
 
 ### Download pre-trained network weights
 We provide a pre-trained model for the set of configurations listed in `config.py`. 
