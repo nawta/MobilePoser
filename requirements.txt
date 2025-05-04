@@ -132,3 +132,8 @@ Werkzeug==3.0.1
 yarl==1.9.4
 yaspin==3.0.1
 zipp==3.17.0
+#git+https://github.com/nawta/nymeria_dataset.git#egg=nymeria&subdirectory=nymeria
+loguru
+projectaria-tools==1.5.8
+pymomentum
+
