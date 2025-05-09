@@ -166,7 +166,7 @@ typing_extensions==4.13.2
 tzdata==2023.3
 urllib3==2.1.0
 vctoolkit==0.1.16.0
-wandb==0.12.11
+wandb==0.19.11
 wcwidth==0.2.13
 Werkzeug==3.0.1
 widgetsnbextension==4.0.14

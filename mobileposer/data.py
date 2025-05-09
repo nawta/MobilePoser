@@ -16,12 +16,13 @@ from mobileposer.helpers import *
 
 
 class PoseDataset(Dataset):
-    def __init__(self, fold: str='train', evaluate: str=None, finetune: str=None):
+    def __init__(self, fold: str='train', evaluate: str=None, finetune: str=None, max_sequences: int = -1):
         super().__init__()
         self.fold = fold
         self.evaluate = evaluate
         self.finetune = finetune
         self.bodymodel = art.model.ParametricModel(paths.smpl_file)
+        self.max_sequences = max_sequences  # new field controlling max sequences to load
         self.combos = list(amass.combos.items())
         # デバイスタイプに基づいて有効なIMUインデックスを設定（process.pyの処理と一致させる）
         # Ariaデバイスの場合：head (4), right wrist (1), left wrist (0)
@@ -64,15 +65,21 @@ class PoseDataset(Dataset):
         data_folder = paths.processed_datasets / ('eval' if (self.finetune or self.evaluate) else '')
         data_files = self._get_data_files(data_folder)
         data = {key: [] for key in ['imu_inputs', 'pose_outputs', 'joint_outputs', 'tran_outputs', 'vel_outputs', 'foot_outputs']}
+        loaded = 0  # count added sequences
         for data_file in tqdm(data_files):
             try:
                 file_data = torch.load(data_folder / data_file)
-                self._process_file_data(file_data, data)
+                # 処理したシーケンス数を返すよう修正
+                loaded = self._process_file_data(file_data, data, loaded)
+                # Stop if we have reached the global max_sequences limit
+                if self.max_sequences != -1 and loaded >= self.max_sequences:
+                    break
             except Exception as e:
                 print(f"Error processing {data_file}: {e}.")
+
         return data
 
-    def _process_file_data(self, file_data, data):
+    def _process_file_data(self, file_data, data, loaded_count=0):
         accs, oris, poses, trans = file_data['acc'], file_data['ori'], file_data['pose'], file_data['tran']
         joints = file_data.get('joint', [None] * len(poses))
         foots = file_data.get('contact', [None] * len(poses))
@@ -109,9 +116,11 @@ class PoseDataset(Dataset):
             if not (self.evaluate or self.finetune):
                 data['vel_outputs'].append(torch.zeros(dummy_length, 24, 3))
                 data['foot_outputs'].append(dummy_foot)
-            return
+            return loaded_count
             
         for acc, ori, pose, tran, joint, foot in zip(accs, oris, poses, trans, joints, foots):
+            if self.max_sequences != -1 and loaded_count >= self.max_sequences:
+                break
             acc, ori = acc[:, :5]/amass.acc_scale, ori[:, :5]
             try:
                 pose_global, joint = self.bodymodel.forward_kinematics(pose=pose.view(-1, 216)) # convert local rotation to global
@@ -121,6 +130,12 @@ class PoseDataset(Dataset):
             except Exception as e:
                 print(f"Error in forward kinematics: {e}")
                 self._process_combo_data(acc, ori, pose, joint, tran, foot, data)
+            loaded_count += 1
+
+        # After processing all sequences in the current file, return the updated
+        # count so that the caller can track the total number of loaded
+        # sequences across multiple files.
+        return loaded_count
 
     def _process_combo_data(self, acc, ori, pose, joint, tran, foot, data):
         # Check for valid IMU data before processing
@@ -129,11 +144,11 @@ class PoseDataset(Dataset):
         ori_has_nan = torch.isnan(ori).any()
         
         if acc_has_nan:
-            print("Warning: NaN values found in acceleration data, replacing with zeros")
+            # print("Warning: NaN values found in acceleration data, replacing with zeros")
             acc = torch.nan_to_num(acc, nan=0.0)
             
         if ori_has_nan:
-            print("Warning: NaN values found in orientation data, replacing with zeros")
+            # print("Warning: NaN values found in orientation data, replacing with zeros")
             ori = torch.nan_to_num(ori, nan=0.0)
         
         # TODO: ここの場合分けちょっと怪しい．．．冗長すぎるかも.
@@ -150,12 +165,12 @@ class PoseDataset(Dataset):
                     valid_data = True
                     break
     
-            if not valid_data:
-                print("Warning: All valid Aria IMU values (left wrist, right wrist, head) are zero, this sequence may not be useful for training")
-        else:
+            # if not valid_data:
+                # print("Warning: All valid Aria IMU values (left wrist, right wrist, head) are zero, this sequence may not be useful for training")
+        # else:
             # XSensまたはその他のデバイス：すべてのIMUを考慮
-            if (acc == 0).all() and (ori == 0).all():
-                print("Warning: All IMU values are zero, this sequence may not be useful for training")
+            # if (acc == 0).all() and (ori == 0).all():
+                # print("Warning: All IMU values are zero, this sequence may not be useful for training")
         
         for _, c in self.combos:
             # mask out layers for different subsets
@@ -173,6 +188,9 @@ class PoseDataset(Dataset):
 
             if not (self.evaluate or self.finetune): # do not finetune translation module
                 self._process_translation_data(joint, tran, foot, data_len, data)
+                
+        # _process_combo_data no longer returns the loaded_count. Its sole
+        # responsibility is to populate the `data` dict.
 
     def _process_translation_data(self, joint, tran, foot, data_len, data):
         root_vel = torch.cat((torch.zeros(1, 3), tran[1:] - tran[:-1]))
@@ -192,10 +210,19 @@ class PoseDataset(Dataset):
             return imu, pose, joint, tran
 
         vel = self.data['vel_outputs'][idx].float()
-        # R_Toe(idx=1)とL_Toe(idx=3)のみを選択
+        # フットコンタクトのチャンネル数はデータセットによって異なる場合がある。
+        # - 4 チャンネルの場合: [R_Foot, R_Toe, L_Foot, L_Toe] と想定し、R_Toe(idx=1)とL_Toe(idx=3)のみを選択
         # Xsensのナンバー的に, foot_contacts->foot_outputsは"R_Foot" (index 17), "R_Toe" (index 18), "L_Foot" (index 21), and "L_Toe" (index 22) の順番だと思われる．要チェック．
+        # - 2 チャンネルの場合: 既に [R_Toe, L_Toe] のみが格納されているとみなす。
         foot_data = self.data['foot_outputs'][idx].float()
-        contact = torch.stack([foot_data[:, 1], foot_data[:, 3]], dim=1)
+        if foot_data.shape[1] == 4:
+            # R_Toe(idx=1) と L_Toe(idx=3) を選択
+            contact = torch.stack([foot_data[:, 1], foot_data[:, 3]], dim=1)
+        elif foot_data.shape[1] == 2:
+            # 既に Toe のみが入っている場合
+            contact = foot_data
+        else:
+            raise ValueError(f"Unexpected foot contact dimension: {foot_data.shape}")
 
         return imu, pose, joint, tran, vel, contact
 
@@ -272,14 +299,15 @@ def pad_seq(batch):
 
 
 class PoseDataModule(L.LightningDataModule):
-    def __init__(self, finetune: str = None):
+    def __init__(self, finetune: str = None, max_sequences: int = -1):
         super().__init__()
         self.finetune = finetune
+        self.max_sequences = max_sequences
         self.hypers = finetune_hypers if self.finetune else train_hypers
 
     def setup(self, stage: str):
         if stage == 'fit':
-            dataset = PoseDataset(fold='train', finetune=self.finetune)
+            dataset = PoseDataset(fold='train', finetune=self.finetune, max_sequences=self.max_sequences)
             train_size = int(0.9 * len(dataset))
             val_size = len(dataset) - train_size
             self.train_dataset, self.val_dataset = random_split(dataset, [train_size, val_size])
@@ -289,7 +317,7 @@ class PoseDataModule(L.LightningDataModule):
             self._validate_dataset(self.val_dataset, "validation")
             
         elif stage == 'test':
-            self.test_dataset = PoseDataset(fold='test', finetune=self.finetune)
+            self.test_dataset = PoseDataset(fold='test', finetune=self.finetune, max_sequences=self.max_sequences)
             self._validate_dataset(self.test_dataset, "test")
 
     def _validate_dataset(self, dataset, name):

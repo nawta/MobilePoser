@@ -152,14 +152,31 @@ To visualize the prediction results of the trained model, we provide a script `e
 3. `--seq-num`: Sequence nuber of dataset to execute prediction. Defaults to 1.
 4. `--with-tran`: A boolean flag to enable visualizing translation estimation. Defaults to False. 
 5. `--combo`: Device-location combination. Defaults to 'lw_rp' (left-wrist right-pocket).
+6. `--save-video`: A boolean flag to save visualization as a sequence of frames instead of displaying it directly. When enabled, frames will be saved to a directory.
+7. `--video-path`: Path to save the output video file (optional). If not provided, a default path will be generated.
    
 Additionally, you can set the GT environment variable to customize visualization modes:
+- GT=0: Visualizes only the predictions (default).
 - GT=1: Visualizes both predictions and ground-truth.
 - GT=2: Visualizes only the ground-truth data.
 
 As an example, we can execute the following concrete command:
 ```
 $ GT=1 python example.py --model checkpoints/weights.pth --dataset dip --seq-num 5 --with-tran
+```
+
+To save visualization as a video:
+```
+$ GT=1 python example.py --model checkpoints/weights.pth --dataset dip --with-tran --save-video
+```
+
+When using the `--save-video` flag, the script will:
+1. Save all frames as PNG files in a directory (named based on the video path with "_frames" suffix)
+2. Print an ffmpeg command that can be used to convert these frames into a video
+
+To convert the saved frames to a video, run the suggested ffmpeg command:
+```
+$ ffmpeg -r 25 -i <frames_directory>/frame_%04d.png -c:v libx264 -vf 'fps=25' <output_video>.mp4
 ```
 
 Note, we recommend using your local machine to visualize the results. 

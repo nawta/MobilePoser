@@ -95,7 +95,7 @@ class TrainingManager:
         # create directory for module
         module_path = checkpoint_path / module_name
         make_dir(module_path)
-        datamodule = PoseDataModule(finetune=self.finetune)
+        datamodule = PoseDataModule(finetune=self.finetune, max_sequences=self.hypers.max_sequences)
         trainer = self._setup_trainer(module_path)
 
         print()
@@ -139,7 +139,15 @@ def get_checkpoint_path(finetune: str, init_from: str):
     if finetune:
         # finetune from a checkpoint
         parts = init_from.split(os.path.sep)
-        checkpoint_path = Path(os.path.join(parts[0], parts[1]))
+        
+        # 修正：チェックポイント番号（例：47）を含むパスを作成
+        # 例：mobileposer/checkpoints/47
+        if len(parts) >= 3 and parts[1] == "checkpoints":
+            checkpoint_path = Path(os.path.join(parts[0], parts[1], parts[2]))
+        else:
+            # 従来のフォールバック処理
+            checkpoint_path = Path(os.path.join(parts[0], parts[1]))
+            
         finetune_dir = f"finetuned_{finetune}"
         checkpoint_path = checkpoint_path / finetune_dir
     else:
@@ -157,6 +165,7 @@ if __name__ == "__main__":
     parser.add_argument("--fast-dev-run", action="store_true")
     parser.add_argument("--finetune", type=str, default=None)
     parser.add_argument("--init-from", nargs="?", default="scratch", type=str)
+    parser.add_argument("--max-seq", type=int, default=-1, help="Maximum number of sequences to load (-1=all)")
     args = parser.parse_args()
 
     # set seed for reproducible results
@@ -164,6 +173,11 @@ if __name__ == "__main__":
 
     # create checkpoint directory, if missing
     paths.checkpoint.mkdir(exist_ok=True)
+
+    # override max_sequences if user specified
+    if args.max_seq != -1:
+        train_hypers.max_sequences = args.max_seq
+        finetune_hypers.max_sequences = args.max_seq
 
     # initialize training manager
     checkpoint_path = get_checkpoint_path(args.finetune, args.init_from)

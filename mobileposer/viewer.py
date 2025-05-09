@@ -36,9 +36,15 @@ class Viewer:
                 pose, joints, tran, contact = self.model.forward_offline(data.unsqueeze(0), [data.shape[0]]) 
         return pose, tran, joints, contact
 
-    def view(self, with_tran: bool=False):
-        """View the pose."""
+    def view(self, with_tran: bool=False, save_video: bool=False, video_path: str=None):
+        """View the pose or save it as a video.
+        
+        Args:
+            with_tran (bool): Whether to include translation.
+            save_video (bool): Whether to save the animation as a video instead of displaying it.
+            video_path (str): Path to save the video file. If None, a default path in outputs/ will be used.
+        """
         pose_t, tran_t = self.data['pose'], self.data['tran']
         pose_p, tran_p, _, _ = self._evaluate_model()
         viewer = SMPLViewer()
-        viewer.view(pose_p, tran_p, pose_t, tran_t, with_tran=with_tran)
+        viewer.view(pose_p, tran_p, pose_t, tran_t, with_tran=with_tran, save_video=save_video, video_path=video_path)

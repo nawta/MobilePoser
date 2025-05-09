@@ -111,26 +111,68 @@ class NymeriaDataProvider(NymeriaDataProviderConfig):
         """
         \brief Compute overlapping timeline across all loaded data
         """
-        t_start = 0
-        t_end = None
+        # Collect start/end times for all loaded providers (XSens body and Aria recordings)
+
+        t_start: int | None = None  # latest start time among all streams
+        t_end: int | None = None    # earliest end time among all streams
+
+        # BodyDataProvider gives timestamps in *micro* seconds – convert to ns for consistency
         if self.body_dp is not None:
-            t0, t1 = self.body_dp.get_global_timespan_us()
-            t_start = t0 * 1e3
-            t_end = t1 * 1e3
+            b_t0_us, b_t1_us = self.body_dp.get_global_timespan_us()
+            b_t0_ns = int(b_t0_us * 1e3)
+            b_t1_ns = int(b_t1_us * 1e3)
+            
+            # 値が異常値でないかチェック (0より小さいまたは極端に大きい値)
+            if b_t0_ns < 0 or b_t1_ns < 0 or b_t0_ns > b_t1_ns or b_t0_ns > 1e15 or b_t1_ns > 1e15:
+                logger.warning(f"[NymeriaDataProvider] Invalid timestamp range from body_dp: {b_t0_us=}us({b_t0_ns=}ns), {b_t1_us=}us({b_t1_ns=}ns)")
+            else:
+                t_start = b_t0_ns
+                t_end = b_t1_ns
 
+        # Iterate over each existing recording and update the overlap interval
+        valid_recordings = []
         for rec in self.get_existing_recordings():
-            t0, t1 = rec.get_global_timespan_ns()
-            t_start = t_start if t_start > t0 else t0
-            t_end = t_end if t_end is not None and t_end < t1 else t1
+            r_t0_ns, r_t1_ns = rec.get_global_timespan_ns()
+            
+            # タイムスタンプの妥当性チェック
+            if r_t0_ns < 0 or r_t1_ns < 0 or r_t0_ns > r_t1_ns or r_t0_ns > 1e15 or r_t1_ns > 1e15:
+                logger.warning(f"[NymeriaDataProvider] Invalid timestamp range from {rec.tag}: {r_t0_ns=}ns, {r_t1_ns=}ns - skipping")
+                continue
+                
+            valid_recordings.append(rec)
 
-        t_start += ignore_ns
-        t_end -= ignore_ns
-        assert t_start < t_end, f"invalid time span {t_start= }us, {t_end= }us"
+            # Update maximum of start times (overlap begins later)
+            if (t_start is None) or (r_t0_ns > t_start):
+                t_start = r_t0_ns
 
-        t_start = int(t_start)
-        t_end = int(t_end)
+            # Update minimum of end times (overlap ends earlier)
+            if (t_end is None) or (r_t1_ns < t_end):
+                t_end = r_t1_ns
+
+        # Sanity check – we must have received at least one valid provider
+        if t_start is None or t_end is None:
+            raise RuntimeError("Could not determine global timespan – no valid providers loaded")
+
+        # Check if the timespan is valid (start time should be earlier than end time)
+        if t_start >= t_end:
+            logger.error(f"[NymeriaDataProvider] Invalid time span: start({t_start/1e3:.0f}μs) >= end({t_end/1e3:.0f}μs), difference: {(t_start-t_end)/1e9:.2f}s")
+            raise AssertionError(f"invalid time span: t_start={t_start/1e3:.0f}μs, t_end={t_end/1e3:.0f}μs")
+
+        # Optionally shrink the interval to avoid border effects. If the margin is
+        # larger than the total span we skip it to avoid negative/invalid spans.
+        if t_end - t_start > 2 * ignore_ns:
+            t_start += ignore_ns
+            t_end -= ignore_ns
+        else:
+            logger.warning("[NymeriaDataProvider] Overlap duration too short – skip ignore_ns margin")
+
+        # Final validity check after adjustments
+        if t_start >= t_end:
+            logger.error(f"[NymeriaDataProvider] Invalid time span after adjustment: start({t_start/1e3:.0f}μs) >= end({t_end/1e3:.0f}μs)")
+            raise AssertionError(f"invalid time span after adjustment: t_start={t_start/1e3:.0f}μs, t_end={t_end/1e3:.0f}μs")
+
         duration = (t_end - t_start) / 1.0e9
-        logger.info(f"time span: {t_start= }us {t_end= }us {duration= }s")
+        logger.info(f"time span: {t_start/1e3:.0f}μs - {t_end/1e3:.0f}μs, duration={duration:.2f}s")
         return t_start, t_end
 
     def get_synced_rgb_videos(self, t_ns_global: int) -> dict[str, any]:

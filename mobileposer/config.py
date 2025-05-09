@@ -7,10 +7,13 @@ class train_hypers:
     """Hyperparameters for training."""
     batch_size = 256
     num_workers = 8
-    num_epochs = 5
+    num_epochs = 3
     accelerator = "gpu"
     device = 0
     lr = 5e-4
+    # Maximum number of sequences to load into memory during dataset preparation.
+    # -1 means no limit (load all). Set to a positive integer to restrict memory usage.
+    max_sequences = -1
 
 
 class finetune_hypers:
@@ -21,6 +24,8 @@ class finetune_hypers:
     accelerator = "gpu"
     device = 0
     lr = 5e-5
+    # Same meaning as in train_hypers. Use a lower value when finetuning to avoid OOM.
+    max_sequences = -1
 
 
 class paths:
@@ -28,7 +33,7 @@ class paths:
     root_dir = Path().absolute()
     checkpoint = root_dir / "mobileposer/checkpoints"
     smpl_file = root_dir / "mobileposer/smpl/basicmodel_m.pkl"
-    weights_file = root_dir / "mobileposer/checkpoints/weights.pth"
+    weights_file = root_dir / "mobileposer/checkpoints/47/model_finetuned.pth"
     raw_amass = Path("/mnt/nas2/naoto/mobileposer_dataset/AMASS")  # AMASS dataset location
     raw_dip = Path("/mnt/nas2/naoto/mobileposer_dataset/DIP_IMU")  # DIP_IMU dataset location
     raw_imuposer = Path("/mnt/nas2/naoto/mobileposer_dataset/imuposer_dataset")  # IMUPoser dataset location

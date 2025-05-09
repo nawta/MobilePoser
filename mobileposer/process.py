@@ -5,6 +5,7 @@ from argparse import ArgumentParser
 from tqdm import tqdm
 import glob
 import sys
+import signal
 from pathlib import Path
 
 sys.path.append('/home/naoto/docker_workspace/nymeria_dataset')
@@ -448,19 +449,75 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
     test_data = _empty_container()
     processed_idxs: set[int] = set()
 
+    def _remove_last_sequence(data_container):
+        """最後のシーケンスを削除します。エラー終了した場合に不完全なデータが残る可能性があるため。"""
+        if not data_container.get("joint", []):
+            return 0  # 空のコンテナ
+            
+        sequence_count = len(data_container["joint"])
+        if sequence_count > 0:
+            # 最後のシーケンスを削除
+            for k in data_container:
+                if len(data_container[k]) > 0:  # 安全のためチェック
+                    data_container[k] = data_container[k][:-1]
+            return len(data_container["joint"])
+        return 0
+            
     if resume:
+        num_train_sequences = 0
+        num_test_sequences = 0
+        
         if train_path.exists():
-            buf = torch.load(train_path)
-            for k in train_data:
-                train_data[k] = buf.get(k, [])
-            processed_idxs.update(range(len(train_data["joint"])))
-            print(f"[Resume] loaded {len(train_data['joint'])} training sequences.")
+            try:
+                buf = torch.load(train_path)
+                for k in train_data:
+                    train_data[k] = buf.get(k, [])
+                
+                # 最後のシーケンスを削除（エラー終了の可能性あり）
+                if len(train_data["joint"]) > 0:
+                    old_count = len(train_data["joint"])
+                    num_train_sequences = _remove_last_sequence(train_data)
+                    print(f"[Safety] 訓練データから最後のシーケンスを削除しました。{old_count} → {num_train_sequences}")
+                else:
+                    num_train_sequences = 0
+                
+                # トレーニングインデックスを追加 (0 ~ num_train-1)
+                processed_idxs.update(range(num_train_sequences))
+                print(f"[Resume] loaded {num_train_sequences} training sequences.")
+            except Exception as e:
+                print(f"[Warning] 訓練データ読み込み中にエラー: {e}")
+                print("訓練データファイルをリセットします")
+                train_path.unlink(missing_ok=True)
+                train_data = _empty_container()
+            
         if test_path.exists():
-            buf = torch.load(test_path)
-            for k in test_data:
-                test_data[k] = buf.get(k, [])
-            processed_idxs.add(len(processed_idxs))
-            print(f"[Resume] loaded {len(test_data['joint'])} testing sequences.")
+            try:
+                buf = torch.load(test_path)
+                for k in test_data:
+                    test_data[k] = buf.get(k, [])
+                
+                # 最後のシーケンスを削除（エラー終了の可能性あり）
+                if len(test_data["joint"]) > 0:
+                    old_count = len(test_data["joint"])
+                    num_test_sequences = _remove_last_sequence(test_data)
+                    print(f"[Safety] テストデータから最後のシーケンスを削除しました。{old_count} → {num_test_sequences}")
+                else:
+                    num_test_sequences = 0
+                
+                # テストインデックスを追加 (各10個に1つ目のインデックス: 9, 19, 29, ...)
+                for i in range(num_test_sequences):
+                    # 実際に処理済みのテストインデックスを特定するのは難しいため
+                    # 安全のため、すべての可能性のあるテストインデックスを追加
+                    for test_idx in range(9, len(seq_dirs), 10):
+                        processed_idxs.add(test_idx)
+                print(f"[Resume] loaded {num_test_sequences} testing sequences.")
+            except Exception as e:
+                print(f"[Warning] テストデータ読み込み中にエラー: {e}")
+                print("テストデータファイルをリセットします")
+                test_path.unlink(missing_ok=True)
+                test_data = _empty_container()
+            
+        print(f"[Resume] total processed sequences: {len(processed_idxs)}")
     else:
         train_path.unlink(missing_ok=True)
         test_path.unlink(missing_ok=True)
@@ -472,7 +529,7 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
     parent = smpl_model.parent
 
     seq_dirs = sorted(glob.glob(os.path.join(str(paths.raw_nymeria), "*")))
-    num_train = int(len(seq_dirs) * 0.9)
+    # 10シーケンスに1つをテストデータとする（seq_idx % 10 == 9 のものがテスト）
 
     def _save():
         os.makedirs(paths.processed_datasets, exist_ok=True)
@@ -483,6 +540,16 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
 
     processed_count = 0
     try:
+        def signal_handler(sig, frame):
+            print(f"\n[Signal {sig}] Saving progress before termination...")
+            _save()
+            sys.exit(0)
+        
+        # 各種終了シグナルに対するハンドラを登録
+        signal.signal(signal.SIGTERM, signal_handler)  # kill コマンドのデフォルト
+        signal.signal(signal.SIGINT, signal_handler)   # キーボード割り込み (Ctrl+C)
+        # SIGKILL (kill -9) は捕捉できないため登録しない
+
         for seq_idx, seq_dir in enumerate(tqdm(seq_dirs, desc="Nymeria")):
             if seq_idx in processed_idxs:
                 continue
@@ -700,12 +767,14 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
                 print(f"Skipping sequence {seq_idx} due to NaN values")
                 continue
 
-            if seq_idx < num_train:
-                for k in train_data:
-                    train_data[k].append(sample[k])
-            else:
+            # 10シーケンスに1つをテストデータに回す
+            if seq_idx % 10 == 9:  # 0, 1, 2, ..., 8がトレーニング、9がテスト
                 for k in test_data:
                     test_data[k].append(sample[k])
+                print(f"[Test] Adding sequence {seq_idx} to test dataset")
+            else:
+                for k in train_data:
+                    train_data[k].append(sample[k])
 
             processed_idxs.add(seq_idx)
             processed_count += 1
