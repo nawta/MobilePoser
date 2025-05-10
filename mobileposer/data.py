@@ -2,7 +2,7 @@ import math
 import numpy as np
 import torch
 torch.set_printoptions(sci_mode=False)
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, IterableDataset
 import torch.nn as nn
 from typing import List
 import random
@@ -240,13 +240,15 @@ class PoseDataset(Dataset):
 def pad_seq(batch):
     """Pad sequences to same length for RNN."""
     def _pad(sequence):
-        # NaN値チェックと置換
-        for i, seq in enumerate(sequence):
+        """Pad a list/tuple of tensors. Handles NaN replacement safely even when input is a tuple."""
+        # Ensure mutable list for in-place replacement
+        seq_list = list(sequence)
+        for idx, seq in enumerate(seq_list):
             if torch.isnan(seq).any():
-                sequence[i] = torch.nan_to_num(seq, nan=0.0)
+                seq_list[idx] = torch.nan_to_num(seq, nan=0.0)
                 
-        padded = nn.utils.rnn.pad_sequence(sequence, batch_first=True)
-        lengths = [seq.shape[0] for seq in sequence]
+        padded = nn.utils.rnn.pad_sequence(seq_list, batch_first=True)
+        lengths = [seq.shape[0] for seq in seq_list]
         return padded, lengths
 
     # 入力データからNaNをチェック・除去
@@ -258,7 +260,7 @@ def pad_seq(batch):
         for i, item in enumerate(data_list):
             if torch.isnan(item).any():
                 # NaNがあることをログに記録（実際の学習時にはどこで発生しているか確認できる）
-                print(f"NaN detected in {data_type}[{i}], replacing with zeros")
+                # print(f"NaN detected in {data_type}[{i}], replacing with zeros")
                 contains_nan = True
     
     # データパディング処理
@@ -298,24 +300,161 @@ def pad_seq(batch):
     return (inputs, input_lengths), (outputs, output_lengths)
 
 
+# ============================================================
+# Lazy-loading dataset using IterableDataset
+# ============================================================
+
+class PoseIterableDataset(IterableDataset):
+    """Stream sequences on-the-fly to avoid loading everything into memory."""
+
+    def __init__(self, fold: str = 'train', evaluate: str | None = None, finetune: str | None = None):
+        super().__init__()
+        self.fold = fold
+        self.evaluate = evaluate
+        self.finetune = finetune
+
+        # heavy resources
+        self.bodymodel = art.model.ParametricModel(paths.smpl_file)
+        self.combos = list(amass.combos.items())
+
+        # determine dataset folder & files
+        self.data_folder = paths.processed_datasets / (
+            'eval' if (self.finetune or self.evaluate) else ''
+        )
+        self.data_files = self._get_data_files(self.data_folder)
+
+    # --------------------------------------------------
+    # helpers
+    # --------------------------------------------------
+    def _get_data_files(self, data_folder):
+        if self.fold == 'train':
+            if self.finetune:
+                return [datasets.finetune_datasets[self.finetune]]
+            return [x.name for x in data_folder.iterdir() if not x.is_dir()]
+        elif self.fold == 'test':
+            return [datasets.test_datasets[self.evaluate]]
+        else:
+            raise ValueError(f"Unknown data fold: {self.fold}")
+
+    # --------------------------------------------------
+    # iterator
+    # --------------------------------------------------
+    def __iter__(self):
+        file_list = self.data_files.copy()
+        random.shuffle(file_list)
+
+        for data_file in file_list:
+            try:
+                file_data = torch.load(self.data_folder / data_file)
+            except Exception as e:
+                print(f"Error loading {data_file}: {e}")
+                continue
+
+            accs, oris, poses, trans = (
+                file_data['acc'], file_data['ori'], file_data['pose'], file_data['tran']
+            )
+            joints = file_data.get('joint', [None] * len(poses))
+            foots = file_data.get('contact', [None] * len(poses))
+
+            # convert quaternion → rotation matrix if necessary (Nymeria)
+            if len(oris) and oris[0].dim() == 3 and oris[0].shape[-1] == 4:
+                tmp = []
+                for q in oris:
+                    t, n, _ = q.shape
+                    rot = art.math.quaternion_to_rotation_matrix(q.view(-1, 4)).view(t, n, 3, 3)
+                    tmp.append(rot)
+                oris = tmp
+
+            # iterate sequences in file
+            for acc, ori, pose, tran, joint, foot in zip(accs, oris, poses, trans, joints, foots):
+                acc = acc[:, :5] / amass.acc_scale
+                ori = ori[:, :5]
+
+                try:
+                    pose_global, joint_glb = self.bodymodel.forward_kinematics(pose=pose.view(-1, 216))
+                    pose_use = pose if self.evaluate else pose_global.view(-1, 24, 3, 3)
+                    joint_use = joint_glb.view(-1, 24, 3)
+                except Exception as e:
+                    print(f"FK error in {data_file}: {e}")
+                    pose_use = pose
+                    joint_use = joint
+
+                for _, combo in self.combos:
+                    combo_acc = torch.zeros_like(acc)
+                    combo_ori = torch.zeros_like(ori)
+                    combo_acc[:, combo] = acc[:, combo]
+                    combo_ori[:, combo] = ori[:, combo]
+                    imu_input = torch.cat([combo_acc.flatten(1), combo_ori.flatten(1)], dim=1)
+
+                    win_len = len(imu_input) if self.evaluate else datasets.window_length
+
+                    for start in range(0, len(imu_input), win_len):
+                        end = start + win_len
+                        imu_chunk = imu_input[start:end].float()
+                        pose_chunk = pose_use[start:end]
+                        joint_chunk = joint_use[start:end]
+                        tran_chunk = tran[start:end]
+
+                        # pose to r6d compressed
+                        num_pred = len(amass.pred_joints_set)
+                        r6d = art.math.rotation_matrix_to_r6d(pose_chunk).reshape(-1, 24, 6)
+                        r6d = r6d[:, amass.pred_joints_set].reshape(-1, 6 * num_pred)
+
+                        if self.evaluate or self.finetune:
+                            yield imu_chunk, r6d.float(), joint_chunk.float(), tran_chunk.float()
+                        else:
+                            # velocities & contact
+                            root_vel = torch.cat((torch.zeros(1, 3), tran_chunk[1:] - tran_chunk[:-1]))
+                            vel_all = torch.cat((torch.zeros(1, 24, 3), torch.diff(joint_chunk, dim=0)))
+                            vel_all[:, 0] = root_vel
+                            vel_out = vel_all * (datasets.fps / amass.vel_scale)
+
+                            contact_chunk = foot[start:end]
+                            if contact_chunk.shape[1] == 4:
+                                contact_chunk = torch.stack([contact_chunk[:, 1], contact_chunk[:, 3]], dim=1)
+
+                            yield (
+                                imu_chunk,
+                                r6d.float(),
+                                joint_chunk.float(),
+                                tran_chunk.float(),
+                                vel_out.float(),
+                                contact_chunk.float(),
+                            )
+
+
 class PoseDataModule(L.LightningDataModule):
-    def __init__(self, finetune: str = None, max_sequences: int = -1):
+    def __init__(self, finetune: str = None, max_sequences: int = -1, streaming: bool = False):
         super().__init__()
         self.finetune = finetune
         self.max_sequences = max_sequences
+        self.streaming = streaming
         self.hypers = finetune_hypers if self.finetune else train_hypers
+        # Reduce batch size & workers when streaming to limit memory
+        if self.streaming:
+            self.hypers.batch_size = min(self.hypers.batch_size, 64)
+            self.hypers.num_workers = min(self.hypers.num_workers, 2)
 
     def setup(self, stage: str):
         if stage == 'fit':
-            dataset = PoseDataset(fold='train', finetune=self.finetune, max_sequences=self.max_sequences)
-            train_size = int(0.9 * len(dataset))
-            val_size = len(dataset) - train_size
-            self.train_dataset, self.val_dataset = random_split(dataset, [train_size, val_size])
-            
-            # データセットのバリデーション
-            self._validate_dataset(self.train_dataset, "train")
-            self._validate_dataset(self.val_dataset, "validation")
-            
+            if self.streaming:
+                # stream training dataset lazily; use small in-memory dataset for validation
+                self.train_dataset = PoseIterableDataset(fold='train', finetune=self.finetune)
+                # use small in-memory dataset for validation to keep memory usage low
+                self.val_dataset = PoseDataset(
+                    fold='train', finetune=self.finetune, max_sequences=100
+                )
+                # optional validation check skipped to save memory
+            else:
+                dataset = PoseDataset(
+                    fold='train', finetune=self.finetune, max_sequences=self.max_sequences
+                )
+                train_size = int(0.9 * len(dataset))
+                val_size = len(dataset) - train_size
+                self.train_dataset, self.val_dataset = random_split(dataset, [train_size, val_size])
+                # dataset validation
+                self._validate_dataset(self.train_dataset, "train")
+                self._validate_dataset(self.val_dataset, "validation")
         elif stage == 'test':
             self.test_dataset = PoseDataset(fold='test', finetune=self.finetune, max_sequences=self.max_sequences)
             self._validate_dataset(self.test_dataset, "test")
@@ -339,20 +478,32 @@ class PoseDataModule(L.LightningDataModule):
             print(f"Dataset validation: No NaN values detected in {name} dataset sample")
 
     def _dataloader(self, dataset):
+        shuffle_flag = not isinstance(dataset, IterableDataset)
         return DataLoader(
-            dataset, 
-            batch_size=self.hypers.batch_size, 
-            collate_fn=pad_seq, 
-            num_workers=self.hypers.num_workers, 
-            shuffle=True, 
-            drop_last=True
+            dataset,
+            batch_size=self.hypers.batch_size,
+            collate_fn=pad_seq,
+            num_workers=self.hypers.num_workers,
+            shuffle=shuffle_flag,
+            drop_last=shuffle_flag,  # IterableDataset cannot drop_last based on length
         )
 
     def train_dataloader(self):
         return self._dataloader(self.train_dataset)
 
     def val_dataloader(self):
-        return self._dataloader(self.val_dataset)
+        # use smaller batch size for validation to save memory
+        orig_bs = self.hypers.batch_size
+        val_bs = min(orig_bs // 2, 64)
+        shuffle_flag = False
+        return DataLoader(
+            self.val_dataset,
+            batch_size=val_bs,
+            collate_fn=pad_seq,
+            num_workers=min(self.hypers.num_workers, 2),
+            shuffle=shuffle_flag,
+            drop_last=False,
+        )
 
     def test_dataloader(self):
         return self._dataloader(self.test_dataset)

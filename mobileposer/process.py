@@ -655,13 +655,15 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
                     acc_frames.append(np.stack([ahL, ahR, alw, arw], 0))
                 elif imu_device == "xsens":
                     # XSensデータからIMU情報を抽出
-                    imu_num = 6
-                    acc_amass = np.zeros((1, imu_num, 3), dtype=np.float32)
-                    ori_amass = np.zeros((1, imu_num, 4), dtype=np.float32)
-                    
-                    # XSensデータからIMU抽出（各フレームごとに処理）
-                    # order mapping: left wrist, right wrist, left thigh, right thigh, head, pelvis
-                    # XSensの部位IDマップ（例: left_wrist -> 15, right_wrist -> 18）
+                    num_parts: int = XSensConstants.num_parts  # = 23
+
+                    # Orientation : 既に (23, 4) 形式で取得可能
+                    ori_part = xs_q[ridx].astype(np.float32)  # (23, 4)
+
+                    # Acceleration : XSensデータからIMU情報を抽出
+                    acc_part = np.zeros((num_parts, 3), dtype=np.float32)
+
+                    # AMASSで使用する6箇所のセグメントID
                     xsens_mapping = {
                         0: 15,  # left wrist
                         1: 18,  # right wrist
@@ -670,29 +672,25 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
                         4: 19,  # head
                         5: 0,   # pelvis
                     }
-                    
+
+                    # 加速度推定に必要な前後フレームのインデックスを取得
+                    if len(ori_frames) > 0 and len(ori_frames) < len(query_ns) - 1:
+                        prev_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames) - 1] // 1000))
+                        next_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames) + 1] // 1000))
+                    else:
+                        prev_idx = next_idx = None
+
                     for amass_idx, xsens_idx in xsens_mapping.items():
-                        if xsens_idx < len(xs_q[ridx]):
-                            # クォータニオン
-                            ori_amass[0, amass_idx] = xs_q[ridx][xsens_idx]
-                            
-                            # 加速度データ - XSensデータにない場合は推定
-                            if xsens_idx < len(part_t) and len(ori_frames) > 0 and len(ori_frames) < len(query_ns) - 1:
-                                # 前後の位置から加速度を計算
-                                prev_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames)-1] // 1000))
-                                next_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames)+1] // 1000))
-                                if prev_idx >= len(xs_t) or next_idx >= len(xs_t):
-                                    acc_amass[0, amass_idx] = np.zeros(3)
-                                else:
-                                    prev_pos = xs_t[prev_idx][xsens_idx] if xsens_idx < len(xs_t[prev_idx]) else np.zeros(3)
-                                    curr_pos = xs_t[ridx][xsens_idx] if xsens_idx < len(xs_t[ridx]) else np.zeros(3)
-                                    next_pos = xs_t[next_idx][xsens_idx] if xsens_idx < len(xs_t[next_idx]) else np.zeros(3)
-                                    # 2次微分で加速度計算
-                                    acc = (next_pos + prev_pos - 2 * curr_pos) * (30 ** 2)  # 30FPSと仮定
-                                    acc_amass[0, amass_idx] = acc
-                
-                    ori_frames.append(ori_amass)
-                    acc_frames.append(acc_amass)
+                        # 加速度を推定 (位置データが利用可能な場合)
+                        if prev_idx is not None and next_idx is not None and prev_idx < len(xs_t) and next_idx < len(xs_t):
+                            prev_pos = xs_t[prev_idx][xsens_idx]
+                            curr_pos = xs_t[ridx][xsens_idx]
+                            next_pos = xs_t[next_idx][xsens_idx]
+                            acc_part[xsens_idx] = (next_pos + prev_pos - 2 * curr_pos) * (TARGET_FPS ** 2)
+
+                    # 1フレーム分を保存
+                    ori_frames.append(ori_part)
+                    acc_frames.append(acc_part)
 
             # --------------------------------------------------------------
             # Finalise per-sequence tensors
@@ -709,13 +707,13 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
 
             # Map Nymeria-available IMUs (head_r / wrist etc.) into AMASS order
             T = len(ori_frames)
-            acc_np = np.array(acc_frames, dtype=np.float32)  # (T,4,3)
-            ori_np = np.array(ori_frames, dtype=np.float32)  # (T,4,4)
+            acc_np = np.array(acc_frames, dtype=np.float32)  # (T,23,3)
+            ori_np = np.array(ori_frames, dtype=np.float32)  # (T,23,4)
 
             # NaN値のチェックと修正
             acc_np = np.nan_to_num(acc_np, nan=0.0)
             ori_np = np.nan_to_num(ori_np, nan=0.0)
-            
+
             imu_num = 6
             acc_amass = np.zeros((T, imu_num, 3), dtype=np.float32)
             ori_amass = np.zeros((T, imu_num, 4), dtype=np.float32)
@@ -740,7 +738,7 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
                     4: 19,  # head
                     5: 0,   # pelvis
                 }
-                
+
                 for amass_idx, xsens_idx in xsens_mapping.items():
                     acc_amass[:, amass_idx] = acc_np[:, xsens_idx]
                     ori_amass[:, amass_idx] = ori_np[:, xsens_idx]
@@ -762,7 +760,7 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
                     print(f"Warning: NaN detected in '{k}' for sequence {seq_idx}")
                     has_nan = True
                     break
-            
+
             if has_nan:
                 print(f"Skipping sequence {seq_idx} due to NaN values")
                 continue
@@ -775,6 +773,7 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
             else:
                 for k in train_data:
                     train_data[k].append(sample[k])
+                print(f"[Train] Adding sequence {seq_idx} to train dataset")
 
             processed_idxs.add(seq_idx)
             processed_count += 1

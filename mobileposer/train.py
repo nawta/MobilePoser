@@ -95,7 +95,11 @@ class TrainingManager:
         # create directory for module
         module_path = checkpoint_path / module_name
         make_dir(module_path)
-        datamodule = PoseDataModule(finetune=self.finetune, max_sequences=self.hypers.max_sequences)
+        datamodule = PoseDataModule(
+            finetune=self.finetune,
+            max_sequences=self.hypers.max_sequences,
+            streaming=args.stream,
+        )
         trainer = self._setup_trainer(module_path)
 
         print()
@@ -166,6 +170,7 @@ if __name__ == "__main__":
     parser.add_argument("--finetune", type=str, default=None)
     parser.add_argument("--init-from", nargs="?", default="scratch", type=str)
     parser.add_argument("--max-seq", type=int, default=-1, help="Maximum number of sequences to load (-1=all)")
+    parser.add_argument("--stream", action="store_true", help="Use lazy IterableDataset for memory efficient training")
     args = parser.parse_args()
 
     # set seed for reproducible results
