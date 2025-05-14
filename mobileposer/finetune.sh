@@ -10,6 +10,11 @@ elif [ "$1" == "imuposer" ]; then
     [ -d "mobileposer/checkpoints/$2/finetuned_imuposer" ] && rm -r "mobileposer/checkpoints/$2/finetuned_imuposer"
     python mobileposer/train.py --module joints --init-from mobileposer/checkpoints/$2/finetuned_dip/joints --finetune imuposer
     python mobileposer/train.py --module poser --init-from mobileposer/checkpoints/$2/finetuned_dip/poser --finetune imuposer
+elif [ "$1" == "nymeria" ]; then
+    echo "Finetuning on Nymeria..." 
+    [ -d "mobileposer/checkpoints/$2/finetuned_nymeria" ] && rm -r "mobileposer/checkpoints/$2/finetuned_nymeria"
+    python mobileposer/train.py --module joints --init-from mobileposer/checkpoints/$2/finetuned_imuposer/joints --finetune nymeria
+    python mobileposer/train.py --module poser --init-from mobileposer/checkpoints/$2/finetuned_imuposer/poser --finetune nymeria
 else
-    echo "Invalid argument. Please specify 'dip' or 'imuposer'"
+    echo "Invalid argument. Please specify 'dip' or 'imuposer' or 'nymeria'"
 fi
