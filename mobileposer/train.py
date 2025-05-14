@@ -74,6 +74,10 @@ class TrainingManager:
         # 学習率調整のコールバック
         lr_monitor = L.pytorch.callbacks.LearningRateMonitor(logging_interval='step')
         
+        # StreamingモードでのGPUメモリ使用量を抑えながら、有効バッチサイズを元のサイズに保つ
+        # 64 * 4 = 256（元のバッチサイズ相当）
+        accumulate_grad_batches = 4 if hasattr(args, 'stream') and args.stream else 1
+        
         trainer = L.Trainer(
                 fast_dev_run=self.fast_dev_run,
                 min_epochs=self.hypers.num_epochs,
@@ -84,7 +88,8 @@ class TrainingManager:
                 callbacks=[checkpoint_callback, nan_detection_callback, lr_monitor],
                 deterministic=True,
                 gradient_clip_val=1.0,  # 勾配爆発を防止
-                detect_anomaly=True  # 計算グラフの異常（NaNなど）を検出
+                detect_anomaly=True,  # 計算グラフの異常（NaNなど）を検出
+                accumulate_grad_batches=accumulate_grad_batches  # ストリーミング時は勾配を蓄積
                 )
         return trainer
 
