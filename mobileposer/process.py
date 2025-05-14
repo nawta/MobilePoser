@@ -523,12 +523,20 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
         test_path.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
+    # Discover Nymeria sequence directories early
+    # ------------------------------------------------------------------
+    # `seq_dirs` is needed during the resume logic below to determine which
+    # indices have already been processed. Defining it here ensures it is
+    # available and prevents an UnboundLocalError that occurred when the
+    # variable was referenced before assignment.
+    seq_dirs = sorted(glob.glob(os.path.join(str(paths.raw_nymeria), "*")))
+
+    # ------------------------------------------------------------------
     # Iterate over recordings ------------------------------------------------
     # ------------------------------------------------------------------
     smpl_model = ParametricModel(paths.smpl_file)  # one global instance
     parent = smpl_model.parent
 
-    seq_dirs = sorted(glob.glob(os.path.join(str(paths.raw_nymeria), "*")))
     # 10シーケンスに1つをテストデータとする（seq_idx % 10 == 9 のものがテスト）
 
     def _save():
@@ -647,12 +655,52 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
 
                 # IMU ----------------------------------------------------
                 if imu_device == "aria":
-                    qhL, ahL = _imu_at(head_p, "1202-2", t_ns)
-                    qhR, ahR = _imu_at(head_p, "1202-1", t_ns)
-                    qlw, alw = _imu_at(lw_p, "1202-2", t_ns)
-                    qrw, arw = _imu_at(rw_p, "1202-1", t_ns)
-                    ori_frames.append(np.stack([qhL, qhR, qlw, qrw], 0))
-                    acc_frames.append(np.stack([ahL, ahR, alw, arw], 0))
+                    # -------------------------
+                    # Aria sensors (4 IMUs)
+                    # -------------------------
+                    qhL, ahL = _imu_at(head_p, "1202-2", t_ns)  # Head left (unused)
+                    qhR, ahR = _imu_at(head_p, "1202-1", t_ns)  # Head right (used)
+                    qlw, alw = _imu_at(lw_p, "1202-2", t_ns)   # Left wrist
+                    qrw, arw = _imu_at(rw_p, "1202-1", t_ns)   # Right wrist
+
+                    # Create XSens-like container (23 segments)
+                    num_parts = XSensConstants.num_parts  # 23
+                    ori_part = np.zeros((num_parts, 4), dtype=np.float32)
+                    acc_part = np.zeros((num_parts, 3), dtype=np.float32)
+
+                    # Fill Aria-provided sensors
+                    ori_part[1] = qhR; acc_part[1] = ahR     # head (use right-side IMU)
+                    ori_part[2] = qlw;  acc_part[2] = alw    # left wrist
+                    ori_part[3] = qrw;  acc_part[3] = arw    # right wrist
+
+                    # -------------------------
+                    # Supplement with XSens data
+                    # -------------------------
+                    xsens_mapping = {0: 0, 4: 4, 7: 7}  # pelvis, left thigh, right thigh
+
+                    # Orientation from XSens quaternion array
+                    for seg in xsens_mapping.values():
+                        ori_part[seg] = part_q[seg]
+
+                    # Compute acceleration for the required segments
+                    # Determine neighboring XSens indices for finite-difference
+                    if len(ori_frames) > 0 and len(ori_frames) < len(query_ns) - 1:
+                        prev_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames) - 1] // 1000))
+                        next_idx = np.searchsorted(xs_ts, int(query_ns[len(ori_frames) + 1] // 1000))
+                    else:
+                        prev_idx = next_idx = None
+
+                    for seg in xsens_mapping.values():
+                        if prev_idx is not None and next_idx is not None and prev_idx < len(xs_t) and next_idx < len(xs_t):
+                            prev_pos = xs_t[prev_idx][seg]
+                            curr_pos = xs_t[ridx][seg]
+                            next_pos = xs_t[next_idx][seg]
+                            acc_part[seg] = (next_pos + prev_pos - 2 * curr_pos) * (TARGET_FPS ** 2)
+
+                    # Store one frame
+                    ori_frames.append(ori_part)
+                    acc_frames.append(acc_part)
+
                 elif imu_device == "xsens":
                     # XSensデータからIMU情報を抽出
                     num_parts: int = XSensConstants.num_parts  # = 23
@@ -719,13 +767,25 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
             ori_amass = np.zeros((T, imu_num, 4), dtype=np.float32)
             # order mapping: left wrist, right wrist, left thigh, right thigh, head, pelvis
             if imu_device == "aria":
+                # Set Aria sensor data for available positions
                 acc_amass[:, 1] = acc_np[:, 3]  # right wrist
                 acc_amass[:, 0] = acc_np[:, 2]  # left wrist
                 acc_amass[:, 4] = acc_np[:, 1]  # head (use right head IMU)
                 ori_amass[:, 1] = ori_np[:, 3]
                 ori_amass[:, 0] = ori_np[:, 2]
                 ori_amass[:, 4] = ori_np[:, 1]
-                # missing thighs / pelvis remain zeros
+                
+                # Supplement missing positions (left thigh, right thigh, pelvis) with XSens data already embedded in acc_np / ori_np
+                xsens_mapping = {
+                    2: 4,   # left thigh
+                    3: 7,   # right thigh
+                    5: 0,   # pelvis
+                }
+
+                for amass_idx, xsens_idx in xsens_mapping.items():
+                    acc_amass[:, amass_idx] = acc_np[:, xsens_idx]
+                    ori_amass[:, amass_idx] = ori_np[:, xsens_idx]
+                
             elif imu_device == "xsens":
                 # XSensデータからIMU情報を抽出
                 # order mapping: left wrist, right wrist, left thigh, right thigh, head, pelvis
