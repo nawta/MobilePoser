@@ -346,7 +346,7 @@ def process_imuposer(split: str="train"):
     torch.save(data, data_path)
 
 
-def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_sequences: int = -1, imu_device: str = "aria"):
+def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_sequences: int = -1, imu_device: str = "aria", is_test_set: bool = False):
     """
     Preprocess the Nymeria dataset and export it in the same AMASS-compatible
     structure that the other *process_* utilities in this file produce.
@@ -442,8 +442,9 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
     test_path = paths.eval_dir / f"nymeria{device_suffix}{contact_suffix}_test.pt"
 
     def _empty_container():
+        # Added 'sequence_name' to keep track of the originating directory name
         return {k: [] for k in [
-            "joint", "pose", "shape", "tran", "acc", "ori", "contact"]}
+            "joint", "pose", "shape", "tran", "acc", "ori", "contact", "sequence_name"]}
 
     train_data = _empty_container()
     test_data = _empty_container()
@@ -610,6 +611,7 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
                 except Exception:
                     return np.zeros(4), np.zeros(3)  # NaN ではなく 0 を返す
 
+            seq_name = Path(seq_dir).name  # e.g., 20230607_s0_james_johnson_act0_e72nhq
             for t_ns in query_ns:
                 # ------------------------------------------------------
                 # XSens frame selection (closest)
@@ -811,29 +813,38 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
                 "acc": torch.from_numpy(acc_amass),
                 "ori": torch.from_numpy(ori_amass),
                 "contact": contacts_tensor,
+                "sequence_name": seq_name,
             }
 
-            # データにNaNがないかチェック
+            # データにNaNがないかチェック（文字列データは除外）
             has_nan = False
             for k, v in sample.items():
-                if torch.isnan(v).any():
-                    print(f"Warning: NaN detected in '{k}' for sequence {seq_idx}")
-                    has_nan = True
-                    break
+                # sequence_nameなどの文字列データはスキップ
+                if not isinstance(v, (str, list)) and torch.is_tensor(v):
+                    if torch.isnan(v).any():
+                        print(f"Warning: NaN detected in '{k}' for sequence {seq_idx}")
+                        has_nan = True
+                        break
 
             if has_nan:
                 print(f"Skipping sequence {seq_idx} due to NaN values")
                 continue
 
-            # 10シーケンスに1つをテストデータに回す
-            if seq_idx % 10 == 9:  # 0, 1, 2, ..., 8がトレーニング、9がテスト
-                for k in test_data:
-                    test_data[k].append(sample[k])
-                print(f"[Test] Adding sequence {seq_idx} to test dataset")
+            if is_test_set:
+                # 10シーケンスに1つをテストデータに回す
+                if seq_idx % 10 == 9:  # 0, 1, 2, ..., 8がトレーニング、9がテスト
+                    for k in test_data:
+                        test_data[k].append(sample[k])
+                    print(f"[Test] Adding sequence {seq_idx} to test dataset")
+                else:
+                    for k in train_data:
+                        train_data[k].append(sample[k])
+                    print(f"[Train] Adding sequence {seq_idx} to train dataset")
             else:
+                # すべてのシーケンスをトレーニングデータに回す
                 for k in train_data:
                     train_data[k].append(sample[k])
-                print(f"[Train] Adding sequence {seq_idx} to train dataset")
+                print(f"Adding sequence {seq_idx} to train dataset")
 
             processed_idxs.add(seq_idx)
             processed_count += 1
