@@ -530,7 +530,11 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
     # indices have already been processed. Defining it here ensures it is
     # available and prevents an UnboundLocalError that occurred when the
     # variable was referenced before assignment.
-    seq_dirs = sorted(glob.glob(os.path.join(str(paths.raw_nymeria), "*")))
+    # Get only directories, excluding any files like data_summary.json or download_summary.json
+    seq_dirs = sorted([
+        d for d in glob.glob(os.path.join(str(paths.raw_nymeria), "*"))
+        if os.path.isdir(d)
+    ])
 
     # ------------------------------------------------------------------
     # Iterate over recordings ------------------------------------------------
