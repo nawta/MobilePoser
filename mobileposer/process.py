@@ -389,16 +389,13 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
     # ------------------------------------------------------------------
     TARGET_FPS = 30  # keep consistent with the other datasets
 
-    def _foot_ground_probs(joint_sequence: torch.Tensor) -> torch.Tensor:
-        """AMASS-style foot contact detection (distance threshold)."""
-        dist_l = torch.norm(joint_sequence[1:, 10] - joint_sequence[:-1, 10], dim=1)
-        dist_r = torch.norm(joint_sequence[1:, 11] - joint_sequence[:-1, 11], dim=1)
-        l_fc = (dist_l < 0.008).int()
-        r_fc = (dist_r < 0.008).int()
-        # prepend one zero so that length matches T
-        l_fc = torch.cat((torch.zeros(1, dtype=torch.int32), l_fc))
-        r_fc = torch.cat((torch.zeros(1, dtype=torch.int32), r_fc))
-        return torch.stack((l_fc, r_fc), dim=1)  # (T, 2)
+    # ------------------------------------------------------------------
+    # Output batching configuration
+    # ------------------------------------------------------------------
+    BATCH_SIZE: int = 100  # number of sequences per output file
+    
+    # Regular-expression helpers for (re)loading existing batch files
+    import re
 
     # Mapping: XSens segment name –> SMPL joint index
     seg2smpl = {
@@ -435,12 +432,67 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
     # ------------------------------------------------------------------
     # Prepare output containers & resume if requested
     # ------------------------------------------------------------------
-    # ファイル名にIMUデバイスとcontact_logicを含める
+    # ファイル名に IMU デバイスと contact_logic を含める
     device_suffix = f"_{imu_device}"
     contact_suffix = f"_{contact_logic}"
-    train_path = paths.processed_datasets / f"nymeria{device_suffix}{contact_suffix}_train.pt"
-    test_path = paths.eval_dir / f"nymeria{device_suffix}{contact_suffix}_test.pt"
 
+    # 事前に Nymeria のシーケンスディレクトリ一覧を取得しておく
+    seq_dirs = sorted([
+        d for d in glob.glob(os.path.join(str(paths.raw_nymeria), "*")) if os.path.isdir(d)
+    ])
+
+    # 既に保存済みのバッチファイルを調査し、次のバッチ番号と処理済みシーケンス数を決定
+    existing_train_files = sorted(
+        glob.glob(os.path.join(str(paths.processed_datasets), f"nymeria{device_suffix}{contact_suffix}_train_*.pt"))
+    )
+    existing_test_files = sorted(
+        glob.glob(os.path.join(str(paths.eval_dir), f"nymeria{device_suffix}{contact_suffix}_test_*.pt"))
+    )
+
+    train_batch_idx = 0
+    test_batch_idx = 0
+    processed_seq_total = 0
+
+    def _update_idx_and_count(file_list, regex_pattern, is_train: bool):
+        nonlocal processed_seq_total, train_batch_idx, test_batch_idx
+        for fp in file_list:
+            m = re.search(regex_pattern, os.path.basename(fp))
+            if m:
+                idx_val = int(m.group(1)) + 1
+                if is_train:
+                    train_batch_idx = max(train_batch_idx, idx_val)
+                else:
+                    test_batch_idx = max(test_batch_idx, idx_val)
+            try:
+                buf = torch.load(fp, map_location="cpu")
+                processed_seq_total += len(buf.get("joint", []))
+            except Exception as e:
+                print(f"[Warning] Failed to load {fp}: {e}")
+
+    _update_idx_and_count(existing_train_files, rf"_train_(\d+)\.pt$", True)
+    _update_idx_and_count(existing_test_files, rf"_test_(\d+)\.pt$", False)
+
+    processed_idxs: set[int] = set(range(processed_seq_total))
+
+    print(f"[Resume] {processed_seq_total} sequences already processed → train_batch_idx={train_batch_idx}, test_batch_idx={test_batch_idx}")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _foot_ground_probs(joint_sequence: torch.Tensor) -> torch.Tensor:
+        """AMASS-style foot contact detection (distance threshold)."""
+        dist_l = torch.norm(joint_sequence[1:, 10] - joint_sequence[:-1, 10], dim=1)
+        dist_r = torch.norm(joint_sequence[1:, 11] - joint_sequence[:-1, 11], dim=1)
+        l_fc = (dist_l < 0.008).int()
+        r_fc = (dist_r < 0.008).int()
+        # prepend one zero so that length matches T
+        l_fc = torch.cat((torch.zeros(1, dtype=torch.int32), l_fc))
+        r_fc = torch.cat((torch.zeros(1, dtype=torch.int32), r_fc))
+        return torch.stack((l_fc, r_fc), dim=1)  # (T, 2)
+
+    # ------------------------------------------------------------------
+    # Prepare output containers
+    # ------------------------------------------------------------------
     def _empty_container():
         # Added 'sequence_name' to keep track of the originating directory name
         return {k: [] for k in [
@@ -448,93 +500,6 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
 
     train_data = _empty_container()
     test_data = _empty_container()
-    processed_idxs: set[int] = set()
-
-    def _remove_last_sequence(data_container):
-        """最後のシーケンスを削除します。エラー終了した場合に不完全なデータが残る可能性があるため。"""
-        if not data_container.get("joint", []):
-            return 0  # 空のコンテナ
-            
-        sequence_count = len(data_container["joint"])
-        if sequence_count > 0:
-            # 最後のシーケンスを削除
-            for k in data_container:
-                if len(data_container[k]) > 0:  # 安全のためチェック
-                    data_container[k] = data_container[k][:-1]
-            return len(data_container["joint"])
-        return 0
-            
-    if resume:
-        num_train_sequences = 0
-        num_test_sequences = 0
-        
-        if train_path.exists():
-            try:
-                buf = torch.load(train_path)
-                for k in train_data:
-                    train_data[k] = buf.get(k, [])
-                
-                # 最後のシーケンスを削除（エラー終了の可能性あり）
-                if len(train_data["joint"]) > 0:
-                    old_count = len(train_data["joint"])
-                    num_train_sequences = _remove_last_sequence(train_data)
-                    print(f"[Safety] 訓練データから最後のシーケンスを削除しました。{old_count} → {num_train_sequences}")
-                else:
-                    num_train_sequences = 0
-                
-                # トレーニングインデックスを追加 (0 ~ num_train-1)
-                processed_idxs.update(range(num_train_sequences))
-                print(f"[Resume] loaded {num_train_sequences} training sequences.")
-            except Exception as e:
-                print(f"[Warning] 訓練データ読み込み中にエラー: {e}")
-                print("訓練データファイルをリセットします")
-                train_path.unlink(missing_ok=True)
-                train_data = _empty_container()
-            
-        if test_path.exists():
-            try:
-                buf = torch.load(test_path)
-                for k in test_data:
-                    test_data[k] = buf.get(k, [])
-                
-                # 最後のシーケンスを削除（エラー終了の可能性あり）
-                if len(test_data["joint"]) > 0:
-                    old_count = len(test_data["joint"])
-                    num_test_sequences = _remove_last_sequence(test_data)
-                    print(f"[Safety] テストデータから最後のシーケンスを削除しました。{old_count} → {num_test_sequences}")
-                else:
-                    num_test_sequences = 0
-                
-                # テストインデックスを追加 (各10個に1つ目のインデックス: 9, 19, 29, ...)
-                for i in range(num_test_sequences):
-                    # 実際に処理済みのテストインデックスを特定するのは難しいため
-                    # 安全のため、すべての可能性のあるテストインデックスを追加
-                    for test_idx in range(9, len(seq_dirs), 10):
-                        processed_idxs.add(test_idx)
-                print(f"[Resume] loaded {num_test_sequences} testing sequences.")
-            except Exception as e:
-                print(f"[Warning] テストデータ読み込み中にエラー: {e}")
-                print("テストデータファイルをリセットします")
-                test_path.unlink(missing_ok=True)
-                test_data = _empty_container()
-            
-        print(f"[Resume] total processed sequences: {len(processed_idxs)}")
-    else:
-        train_path.unlink(missing_ok=True)
-        test_path.unlink(missing_ok=True)
-
-    # ------------------------------------------------------------------
-    # Discover Nymeria sequence directories early
-    # ------------------------------------------------------------------
-    # `seq_dirs` is needed during the resume logic below to determine which
-    # indices have already been processed. Defining it here ensures it is
-    # available and prevents an UnboundLocalError that occurred when the
-    # variable was referenced before assignment.
-    # Get only directories, excluding any files like data_summary.json or download_summary.json
-    seq_dirs = sorted([
-        d for d in glob.glob(os.path.join(str(paths.raw_nymeria), "*"))
-        if os.path.isdir(d)
-    ])
 
     # ------------------------------------------------------------------
     # Iterate over recordings ------------------------------------------------
@@ -544,18 +509,41 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
 
     # 10シーケンスに1つをテストデータとする（seq_idx % 10 == 9 のものがテスト）
 
-    def _save():
+    def _save(force: bool = False):
+        """Flush completed batches to disk.
+
+        When ``force`` is True, also write the remaining sequences (<BATCH_SIZE)
+        so that no data are lost on early termination.
+        """
+        nonlocal train_data, test_data, train_batch_idx, test_batch_idx
+
         os.makedirs(paths.processed_datasets, exist_ok=True)
         os.makedirs(paths.eval_dir, exist_ok=True)
-        torch.save(train_data, train_path)
-        torch.save(test_data, test_path)
-        print("[AutoSave] progress written to disk.")
 
+        # Flush training data
+        if len(train_data["joint"]) >= BATCH_SIZE or (force and len(train_data["joint"]) > 0):
+            out_path = paths.processed_datasets / f"nymeria{device_suffix}{contact_suffix}_train_{train_batch_idx:03d}.pt"
+            torch.save(train_data, out_path)
+            print(f"[Save] wrote {len(train_data['joint'])} train sequences → {out_path}")
+            train_batch_idx += 1
+            train_data = _empty_container()
+
+        # Flush testing data
+        if len(test_data["joint"]) >= BATCH_SIZE or (force and len(test_data["joint"]) > 0):
+            out_path = paths.eval_dir / f"nymeria{device_suffix}{contact_suffix}_test_{test_batch_idx:03d}.pt"
+            torch.save(test_data, out_path)
+            print(f"[Save] wrote {len(test_data['joint'])} test sequences → {out_path}")
+            test_batch_idx += 1
+            test_data = _empty_container()
+
+    # ------------------------------------------------------------------
+    # Iterate over recordings ------------------------------------------------
+    # ------------------------------------------------------------------
     processed_count = 0
     try:
         def signal_handler(sig, frame):
-            print(f"\n[Signal {sig}] Saving progress before termination...")
-            _save()
+            print(f"\n[Signal {sig}] Saving progress before termination…")
+            _save(force=True)
             sys.exit(0)
         
         # 各種終了シグナルに対するハンドラを登録
@@ -852,15 +840,15 @@ def process_nymeria(resume: bool = True, contact_logic: str = "xdata", max_seque
 
             processed_idxs.add(seq_idx)
             processed_count += 1
-            _save()
+            _save()  # flush only when batch is full
 
     except KeyboardInterrupt:
         print("\n[Interrupted] Saving progress…")
-        _save()
+        _save(force=True)
         return
 
-    _save()
-    print(f"Finished Nymeria preprocessing → {train_path} & {test_path}")
+    _save(force=True)
+    print("Finished Nymeria preprocessing (batched mode).")
 
 
 def create_directories():

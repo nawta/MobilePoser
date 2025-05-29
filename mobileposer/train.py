@@ -75,8 +75,10 @@ class TrainingManager:
         lr_monitor = L.pytorch.callbacks.LearningRateMonitor(logging_interval='step')
         
         # StreamingモードでのGPUメモリ使用量を抑えながら、有効バッチサイズを元のサイズに保つ
-        # 64 * 4 = 256（元のバッチサイズ相当）
-        accumulate_grad_batches = 4 if hasattr(args, 'stream') and args.stream else 1
+        if hasattr(args, 'stream') and args.stream:
+            accumulate_grad_batches = getattr(self.hypers, 'accumulate_grad_batches', 4)
+        else:
+            accumulate_grad_batches = 1
         
         trainer = L.Trainer(
                 fast_dev_run=self.fast_dev_run,

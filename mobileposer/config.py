@@ -5,8 +5,8 @@ from enum import Enum, auto
 
 class train_hypers:
     """Hyperparameters for training."""
-    batch_size = 256
-    num_workers = 8
+    batch_size = 4096
+    num_workers = 32
     num_epochs = 3
     accelerator = "gpu"
     device = 0
@@ -14,6 +14,11 @@ class train_hypers:
     # Maximum number of sequences to load into memory during dataset preparation.
     # -1 means no limit (load all). Set to a positive integer to restrict memory usage.
     max_sequences = -1
+    # Number of sequences to buffer in memory during streaming
+    # Higher values may improve performance but increase memory usage
+    stream_buffer_size = 200
+    # Gradient accumulation steps when streaming
+    accumulate_grad_batches = 32    
 
 
 class finetune_hypers:
@@ -26,6 +31,11 @@ class finetune_hypers:
     lr = 5e-5
     # Same meaning as in train_hypers. Use a lower value when finetuning to avoid OOM.
     max_sequences = -1
+    # Number of sequences to buffer in memory during streaming
+    # Higher values may improve performance but increase memory usage
+    stream_buffer_size = 1
+    # Gradient accumulation steps when streaming / finetuning
+    accumulate_grad_batches = 4
 
 
 class paths:
@@ -39,7 +49,7 @@ class paths:
     raw_imuposer = Path("/mnt/nas2/naoto/mobileposer_dataset/imuposer_dataset")  # IMUPoser dataset location
     raw_nymeria = Path("/mnt/nas2/naoto/nymeria_dataset/data_recording_head_rwrist_lwrist_and_body_motion")  # Nymeria dataset location
     eval_dir = root_dir / "datasets/processed_datasets/eval"
-    processed_datasets = root_dir / "datasets/processed_datasets"
+    processed_datasets = root_dir / "datasets/processed_datasets/tmp"
 
 
 class model_config:

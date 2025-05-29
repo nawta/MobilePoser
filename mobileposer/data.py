@@ -307,11 +307,13 @@ def pad_seq(batch):
 class PoseIterableDataset(IterableDataset):
     """Stream sequences on-the-fly to avoid loading everything into memory."""
 
-    def __init__(self, fold: str = 'train', evaluate: str | None = None, finetune: str | None = None):
+    def __init__(self, fold: str = 'train', evaluate: str | None = None, 
+                 finetune: str | None = None, stream_buffer_size: int = 1):
         super().__init__()
         self.fold = fold
         self.evaluate = evaluate
         self.finetune = finetune
+        self.stream_buffer_size = stream_buffer_size  # Number of sequences to buffer in memory
 
         # heavy resources
         self.bodymodel = art.model.ParametricModel(paths.smpl_file)
@@ -342,6 +344,85 @@ class PoseIterableDataset(IterableDataset):
     def __iter__(self):
         file_list = self.data_files.copy()
         random.shuffle(file_list)
+        
+        # Buffer to hold sequences before processing
+        sequence_buffer = []
+        
+        def process_sequence(acc, ori, pose, tran, joint, foot, data_file):
+            """Process a single sequence and yield its windows."""
+            acc = acc[:, :5] / amass.acc_scale
+            ori = ori[:, :5]
+
+            try:
+                pose_global, joint_glb = self.bodymodel.forward_kinematics(pose=pose.view(-1, 216))
+                pose_use = pose if self.evaluate else pose_global.view(-1, 24, 3, 3)
+                joint_use = joint_glb.view(-1, 24, 3)
+            except Exception as e:
+                print(f"FK error in {data_file}: {e}")
+                pose_use = pose
+                joint_use = joint
+
+            for _, combo in self.combos:
+                combo_acc = torch.zeros_like(acc)
+                combo_ori = torch.zeros_like(ori)
+                combo_acc[:, combo] = acc[:, combo]
+                combo_ori[:, combo] = ori[:, combo]
+                imu_input = torch.cat([combo_acc.flatten(1), combo_ori.flatten(1)], dim=1)
+
+                win_len = len(imu_input) if self.evaluate else datasets.window_length
+
+                for start in range(0, len(imu_input), win_len):
+                    end = start + win_len
+                    imu_chunk = imu_input[start:end].float()
+                    pose_chunk = pose_use[start:end] if pose_use is not None else None
+                    joint_chunk = joint_use[start:end] if joint_use is not None else None
+                    tran_chunk = tran[start:end] if tran is not None else None
+
+                    # Skip if any required tensor is None or empty
+                    if imu_chunk is None or (pose_chunk is None and not self.evaluate):
+                        continue
+
+                    # pose to r6d compressed
+                    if pose_chunk is not None:
+                        num_pred = len(amass.pred_joints_set)
+                        r6d = art.math.rotation_matrix_to_r6d(pose_chunk).reshape(-1, 24, 6)
+                        r6d = r6d[:, amass.pred_joints_set].reshape(-1, 6 * num_pred)
+                    else:
+                        r6d = None
+
+                    if self.evaluate or self.finetune:
+                        yield imu_chunk, r6d.float() if r6d is not None else None, \
+                              joint_chunk.float() if joint_chunk is not None else None, \
+                              tran_chunk.float() if tran_chunk is not None else None
+                    else:
+                        # velocities & contact
+                        if tran_chunk is not None and len(tran_chunk) > 1:
+                            root_vel = torch.cat((torch.zeros(1, 3), tran_chunk[1:] - tran_chunk[:-1]))
+                        else:
+                            root_vel = torch.zeros(1, 3)
+                            
+                        if joint_chunk is not None and len(joint_chunk) > 1:
+                            vel_all = torch.cat((torch.zeros(1, 24, 3), torch.diff(joint_chunk, dim=0)))
+                            vel_all[:, 0] = root_vel
+                            vel_out = vel_all * (datasets.fps / amass.vel_scale)
+                        else:
+                            vel_out = torch.zeros(1, 24, 3)
+
+                        contact_chunk_processed = None
+                        if foot is not None and len(foot) > start:
+                            contact_chunk_processed = foot[start:end]
+                            if contact_chunk_processed.shape[1] == 4:
+                                contact_chunk_processed = torch.stack([contact_chunk_processed[:, 1], 
+                                                                    contact_chunk_processed[:, 3]], dim=1)
+
+                        yield (
+                            imu_chunk,
+                            r6d.float() if r6d is not None else torch.zeros(imu_chunk.size(0), len(amass.pred_joints_set) * 6),
+                            joint_chunk.float() if joint_chunk is not None else torch.zeros(imu_chunk.size(0), 24, 3),
+                            tran_chunk.float() if tran_chunk is not None else torch.zeros(imu_chunk.size(0), 3),
+                            vel_out.float(),
+                            contact_chunk_processed.float() if contact_chunk_processed is not None else torch.zeros(imu_chunk.size(0), 2),
+                        )
 
         for data_file in file_list:
             try:
@@ -350,14 +431,15 @@ class PoseIterableDataset(IterableDataset):
                 print(f"Error loading {data_file}: {e}")
                 continue
 
-            accs, oris, poses, trans = (
-                file_data['acc'], file_data['ori'], file_data['pose'], file_data['tran']
-            )
+            accs = file_data.get('acc', [])
+            oris = file_data.get('ori', [])
+            poses = file_data.get('pose', [])
+            trans = file_data.get('tran', [])
             joints = file_data.get('joint', [None] * len(poses))
             foots = file_data.get('contact', [None] * len(poses))
 
             # convert quaternion → rotation matrix if necessary (Nymeria)
-            if len(oris) and oris[0].dim() == 3 and oris[0].shape[-1] == 4:
+            if len(oris) > 0 and oris[0].dim() == 3 and oris[0].shape[-1] == 4:
                 tmp = []
                 for q in oris:
                     t, n, _ = q.shape
@@ -365,62 +447,20 @@ class PoseIterableDataset(IterableDataset):
                     tmp.append(rot)
                 oris = tmp
 
-            # iterate sequences in file
+            # Add sequences to buffer
             for acc, ori, pose, tran, joint, foot in zip(accs, oris, poses, trans, joints, foots):
-                acc = acc[:, :5] / amass.acc_scale
-                ori = ori[:, :5]
-
-                try:
-                    pose_global, joint_glb = self.bodymodel.forward_kinematics(pose=pose.view(-1, 216))
-                    pose_use = pose if self.evaluate else pose_global.view(-1, 24, 3, 3)
-                    joint_use = joint_glb.view(-1, 24, 3)
-                except Exception as e:
-                    print(f"FK error in {data_file}: {e}")
-                    pose_use = pose
-                    joint_use = joint
-
-                for _, combo in self.combos:
-                    combo_acc = torch.zeros_like(acc)
-                    combo_ori = torch.zeros_like(ori)
-                    combo_acc[:, combo] = acc[:, combo]
-                    combo_ori[:, combo] = ori[:, combo]
-                    imu_input = torch.cat([combo_acc.flatten(1), combo_ori.flatten(1)], dim=1)
-
-                    win_len = len(imu_input) if self.evaluate else datasets.window_length
-
-                    for start in range(0, len(imu_input), win_len):
-                        end = start + win_len
-                        imu_chunk = imu_input[start:end].float()
-                        pose_chunk = pose_use[start:end]
-                        joint_chunk = joint_use[start:end]
-                        tran_chunk = tran[start:end]
-
-                        # pose to r6d compressed
-                        num_pred = len(amass.pred_joints_set)
-                        r6d = art.math.rotation_matrix_to_r6d(pose_chunk).reshape(-1, 24, 6)
-                        r6d = r6d[:, amass.pred_joints_set].reshape(-1, 6 * num_pred)
-
-                        if self.evaluate or self.finetune:
-                            yield imu_chunk, r6d.float(), joint_chunk.float(), tran_chunk.float()
-                        else:
-                            # velocities & contact
-                            root_vel = torch.cat((torch.zeros(1, 3), tran_chunk[1:] - tran_chunk[:-1]))
-                            vel_all = torch.cat((torch.zeros(1, 24, 3), torch.diff(joint_chunk, dim=0)))
-                            vel_all[:, 0] = root_vel
-                            vel_out = vel_all * (datasets.fps / amass.vel_scale)
-
-                            contact_chunk = foot[start:end]
-                            if contact_chunk.shape[1] == 4:
-                                contact_chunk = torch.stack([contact_chunk[:, 1], contact_chunk[:, 3]], dim=1)
-
-                            yield (
-                                imu_chunk,
-                                r6d.float(),
-                                joint_chunk.float(),
-                                tran_chunk.float(),
-                                vel_out.float(),
-                                contact_chunk.float(),
-                            )
+                sequence_buffer.append((acc, ori, pose, tran, joint, foot, data_file))
+                
+                # Process buffer if it reaches the desired size
+                if len(sequence_buffer) >= self.stream_buffer_size:
+                    # Process all sequences in the buffer
+                    for seq in sequence_buffer:
+                        yield from process_sequence(*seq)
+                    sequence_buffer = []
+            
+        # Process any remaining sequences in the buffer
+        for seq in sequence_buffer:
+            yield from process_sequence(*seq)
 
 
 class PoseDataModule(L.LightningDataModule):
@@ -439,7 +479,12 @@ class PoseDataModule(L.LightningDataModule):
         if stage == 'fit':
             if self.streaming:
                 # stream training dataset lazily; use small in-memory dataset for validation
-                self.train_dataset = PoseIterableDataset(fold='train', finetune=self.finetune)
+                stream_buffer_size = getattr(self.hypers, 'stream_buffer_size', 1)
+                self.train_dataset = PoseIterableDataset(
+                    fold='train', 
+                    finetune=self.finetune,
+                    stream_buffer_size=stream_buffer_size
+                )
                 # use small in-memory dataset for validation to keep memory usage low
                 self.val_dataset = PoseDataset(
                     fold='train', finetune=self.finetune, max_sequences=100
