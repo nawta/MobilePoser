@@ -76,7 +76,11 @@ class TrainingManager:
         
         # StreamingモードでのGPUメモリ使用量を抑えながら、有効バッチサイズを元のサイズに保つ
         if hasattr(args, 'stream') and args.stream:
-            accumulate_grad_batches = getattr(self.hypers, 'accumulate_grad_batches', 4)
+            # Calculate accumulation to maintain effective batch size close to original
+            original_bs = finetune_hypers.batch_size if self.finetune else train_hypers.batch_size
+            current_bs = self.hypers.batch_size if hasattr(self, 'hypers') else (finetune_hypers.batch_size if self.finetune else train_hypers.batch_size)
+            target_accumulation = max(1, original_bs // current_bs)
+            accumulate_grad_batches = getattr(self.hypers, 'accumulate_grad_batches', target_accumulation)
         else:
             accumulate_grad_batches = 1
         

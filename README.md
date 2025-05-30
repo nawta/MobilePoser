@@ -115,6 +115,89 @@ As an example, we can execute the following command to train all modules:
 $ python train.py
 ```
 
+### Streaming Training Mode
+For large datasets or memory-constrained environments, use the streaming training mode:
+```
+$ python train.py --stream
+```
+
+The streaming mode loads data on-the-fly to reduce memory usage. This is particularly useful for:
+- Systems with limited RAM
+- Very large datasets that don't fit in memory
+- Continuous training on new data
+
+#### Memory Usage Configuration
+Memory usage can be controlled through several parameters in `mobileposer/config.py`:
+
+**Key Memory Control Parameters:**
+
+1. **`stream_buffer_size`** - Controls how many sequences are buffered in memory during streaming
+   ```python
+   # For systems with limited memory (< 32GB RAM)
+   stream_buffer_size = 500
+   
+   # For systems with moderate memory (32-64GB RAM)  
+   stream_buffer_size = 1000  # Current stable setting
+   
+   # For systems with high memory (> 64GB RAM)
+   stream_buffer_size = 5000-20000
+   ```
+
+2. **`batch_size`** - Batch size is automatically adjusted for streaming mode
+   ```python
+   # Original batch size (non-streaming)
+   batch_size = 4096
+   
+   # Automatically reduced for streaming (in data.py)
+   # Large batches: max(512, original_bs // 8) 
+   # Small batches: max(32, original_bs // 2)
+   ```
+
+3. **`accumulate_grad_batches`** - Maintains effective batch size through gradient accumulation
+   ```python
+   # Balances memory usage vs training quality
+   accumulate_grad_batches = 16  # Current stable setting
+   ```
+
+4. **`num_workers`** - Controls parallel data loading workers
+   ```python
+   # Automatically adjusted for streaming mode
+   num_workers = 8  # Reduced from 32 for streaming
+   ```
+
+**Memory Usage Guidelines:**
+
+| System Memory | Recommended Settings | Expected Usage |
+|---------------|---------------------|----------------|
+| 16-32 GB | `stream_buffer_size=500`, `batch_size=256` | 8-15 GB |
+| 32-64 GB | `stream_buffer_size=1000`, `batch_size=512` | 15-30 GB |
+| 64-128 GB | `stream_buffer_size=2000-5000`, `batch_size=512-1024` | 30-60 GB |
+| > 128 GB | `stream_buffer_size=10000+`, `batch_size=1024` | 60+ GB |
+
+**GPU Memory Considerations:**
+- RTX 4090 (24GB): Current settings use ~4.3GB (18% utilization)
+- RTX 3080 (10GB): Use `batch_size=256` or lower
+- RTX 3060 (8GB): Use `batch_size=128` and reduce `stream_buffer_size=500`
+
+**Monitoring Memory Usage:**
+```bash
+# Monitor system memory
+watch -n 1 free -h
+
+# Monitor GPU memory  
+watch -n 1 nvidia-smi
+
+# Run with memory monitoring
+python monitor_training.py  # Custom monitoring script
+```
+
+**Environment Variables for Memory Optimization:**
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS=4
+export CUDA_LAUNCH_BLOCKING=0
+```
+
 ### Finetuning Model
 To facilitate finetuning MobilePoser, we provide a script `finetune.sh`. To run this script, use the following syntax: 
 ```

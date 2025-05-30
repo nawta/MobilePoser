@@ -5,8 +5,12 @@ from enum import Enum, auto
 
 class train_hypers:
     """Hyperparameters for training."""
-    batch_size = 4096
+    batch_size = 2048
     num_workers = 32
+    # Prefetch factor for DataLoader
+    prefetch_factor = 2
+    # Pin memory for faster GPU transfer
+    pin_memory = True
     num_epochs = 3
     accelerator = "gpu"
     device = 0
@@ -16,9 +20,9 @@ class train_hypers:
     max_sequences = -1
     # Number of sequences to buffer in memory during streaming
     # Higher values may improve performance but increase memory usage
-    stream_buffer_size = 200
+    stream_buffer_size = 1000
     # Gradient accumulation steps when streaming
-    accumulate_grad_batches = 32    
+    accumulate_grad_batches = 16
 
 
 class finetune_hypers:
@@ -33,9 +37,9 @@ class finetune_hypers:
     max_sequences = -1
     # Number of sequences to buffer in memory during streaming
     # Higher values may improve performance but increase memory usage
-    stream_buffer_size = 1
+    stream_buffer_size = 100
     # Gradient accumulation steps when streaming / finetuning
-    accumulate_grad_batches = 4
+    accumulate_grad_batches = 16
 
 
 class paths:
@@ -49,7 +53,7 @@ class paths:
     raw_imuposer = Path("/mnt/nas2/naoto/mobileposer_dataset/imuposer_dataset")  # IMUPoser dataset location
     raw_nymeria = Path("/mnt/nas2/naoto/nymeria_dataset/data_recording_head_rwrist_lwrist_and_body_motion")  # Nymeria dataset location
     eval_dir = root_dir / "datasets/processed_datasets/eval"
-    processed_datasets = root_dir / "datasets/processed_datasets/tmp"
+    processed_datasets = root_dir / "datasets/processed_datasets"
 
 
 class model_config:

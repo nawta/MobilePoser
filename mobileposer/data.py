@@ -314,6 +314,8 @@ class PoseIterableDataset(IterableDataset):
         self.evaluate = evaluate
         self.finetune = finetune
         self.stream_buffer_size = stream_buffer_size  # Number of sequences to buffer in memory
+        # Pre-allocate tensors for better performance
+        self.tensor_cache = {}
 
         # heavy resources
         self.bodymodel = art.model.ParametricModel(paths.smpl_file)
@@ -472,8 +474,15 @@ class PoseDataModule(L.LightningDataModule):
         self.hypers = finetune_hypers if self.finetune else train_hypers
         # Reduce batch size & workers when streaming to limit memory
         if self.streaming:
-            self.hypers.batch_size = min(self.hypers.batch_size, 64)
-            self.hypers.num_workers = min(self.hypers.num_workers, 2)
+            # Dynamic batch size based on original and memory constraints
+            original_bs = self.hypers.batch_size
+            if original_bs >= 1024:
+                # For large batch sizes, reduce but keep reasonable size
+                self.hypers.batch_size = max(512, original_bs // 8)
+            else:
+                # For smaller batch sizes, reduce less aggressively
+                self.hypers.batch_size = max(32, original_bs // 2)
+            self.hypers.num_workers = min(self.hypers.num_workers, 8)
 
     def setup(self, stage: str):
         if stage == 'fit':
@@ -531,6 +540,9 @@ class PoseDataModule(L.LightningDataModule):
             num_workers=self.hypers.num_workers,
             shuffle=shuffle_flag,
             drop_last=shuffle_flag,  # IterableDataset cannot drop_last based on length
+            pin_memory=getattr(self.hypers, 'pin_memory', True),
+            prefetch_factor=getattr(self.hypers, 'prefetch_factor', 4),
+            persistent_workers=True if self.hypers.num_workers > 0 else False,
         )
 
     def train_dataloader(self):
@@ -539,15 +551,18 @@ class PoseDataModule(L.LightningDataModule):
     def val_dataloader(self):
         # use smaller batch size for validation to save memory
         orig_bs = self.hypers.batch_size
-        val_bs = min(orig_bs // 2, 64)
+        val_bs = min(orig_bs // 2, 128)
         shuffle_flag = False
         return DataLoader(
             self.val_dataset,
             batch_size=val_bs,
             collate_fn=pad_seq,
-            num_workers=min(self.hypers.num_workers, 2),
+            num_workers=min(self.hypers.num_workers, 4),
             shuffle=shuffle_flag,
             drop_last=False,
+            pin_memory=getattr(self.hypers, 'pin_memory', True),
+            prefetch_factor=getattr(self.hypers, 'prefetch_factor', 2),
+            persistent_workers=True if min(self.hypers.num_workers, 4) > 0 else False,
         )
 
     def test_dataloader(self):
