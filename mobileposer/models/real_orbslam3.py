@@ -5,6 +5,7 @@ from pathlib import Path
 import logging
 import sys
 import os
+import ctypes
 
 from mobileposer.models.slam import SlamInterface
 
@@ -247,11 +248,50 @@ Viewer.ViewpointF: 500
         with open(settings_file, 'w') as f:
             f.write(settings_content)
     
+    def _setup_orbslam_environment(self):
+        """Setup environment for ORB-SLAM3 libraries."""
+        # Add library paths
+        lib_paths = [
+            "/usr/local/lib",
+            "/usr/lib/x86_64-linux-gnu",
+            str(Path(__file__).parent.parent.parent / "third_party/pyOrbSlam3/pyOrbSlam3/modules/ORB_SLAM3/lib"),
+            str(Path(__file__).parent.parent.parent / "third_party/pyOrbSlam3/pyOrbSlam3/modules/ORB_SLAM3/Thirdparty/DBoW2/lib"),
+            str(Path(__file__).parent.parent.parent / "third_party/pyOrbSlam3/pyOrbSlam3/modules/ORB_SLAM3/Thirdparty/g2o/lib"),
+        ]
+        
+        current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+        new_paths = [p for p in lib_paths if p not in current_ld_path]
+        
+        if new_paths:
+            os.environ['LD_LIBRARY_PATH'] = ':'.join(new_paths) + ':' + current_ld_path
+            self.logger.info(f"Updated LD_LIBRARY_PATH with: {new_paths}")
+        
+        # Pre-load Pangolin libraries to avoid loading issues
+        pangolin_libs = [
+            'libpango_core.so.0',
+            'libpango_opengl.so.0',
+            'libpango_windowing.so.0', 
+            'libpango_image.so.0',
+            'libpango_vars.so.0',
+            'libpango_display.so.0',
+        ]
+        
+        for lib in pangolin_libs:
+            lib_path = f'/usr/local/lib/{lib}'
+            if os.path.exists(lib_path):
+                try:
+                    ctypes.CDLL(lib_path, ctypes.RTLD_GLOBAL)
+                except Exception as e:
+                    self.logger.warning(f"Failed to pre-load {lib}: {e}")
+    
     def initialize(self, config_path: str = None) -> bool:
         """Initialize ORB-SLAM3 system."""
         try:
             # Import pyOrbSlam
             try:
+                # Setup environment for ORB-SLAM3 libraries
+                self._setup_orbslam_environment()
+                
                 # Add the pyOrbSlam3 build path to Python path
                 pyorb_build_path = Path(__file__).parent.parent.parent / "third_party/pyOrbSlam3/pyOrbSlam3/build"
                 if str(pyorb_build_path) not in sys.path:
@@ -353,14 +393,25 @@ Viewer.ViewpointF: 500
                 confidence = 0.0
             
             # Process pose if available
-            if pose_matrix is not None and self.tracking_state == "tracking":
-                # ORB-SLAM3 returns camera pose in world frame
-                self.last_pose = pose_matrix
-                
+            if pose_matrix is not None:
+                # Check if pose_matrix is valid (not empty)
+                if isinstance(pose_matrix, np.ndarray) and pose_matrix.size > 0:
+                    # Convert to 4x4 if needed
+                    if pose_matrix.shape == (4, 4):
+                        self.last_pose = pose_matrix
+                    else:
+                        # Log unexpected shape
+                        self.logger.warning(f"Unexpected pose matrix shape: {pose_matrix.shape}")
+                        pose_matrix = None
+                else:
+                    pose_matrix = None
+            
+            # Return pose even during initialization if available
+            if pose_matrix is not None:
                 # Get map points if available
                 map_points = None
                 try:
-                    map_points = self.slam_system.GetTrackedMapPoints()  # TODO: Check if this method exists
+                    map_points = self.slam_system.GetTrackedMapPoints()
                 except:
                     pass
                 
@@ -369,18 +420,29 @@ Viewer.ViewpointF: 500
                     'confidence': confidence,
                     'tracking_state': self.tracking_state,
                     'map_points': map_points,
-                    'keypoints': None,  # Could be added if needed
-                    'timestamp': timestamp
-                }
-            else:
-                return {
-                    'pose': None,
-                    'confidence': confidence,
-                    'tracking_state': self.tracking_state,
-                    'map_points': None,
                     'keypoints': None,
                     'timestamp': timestamp
                 }
+            else:
+                # Return last known pose if available during initialization
+                if self.tracking_state == "initializing" and self.last_pose is not None:
+                    return {
+                        'pose': self.last_pose,
+                        'confidence': 0.1,  # Low confidence during init
+                        'tracking_state': self.tracking_state,
+                        'map_points': None,
+                        'keypoints': None,
+                        'timestamp': timestamp
+                    }
+                else:
+                    return {
+                        'pose': None,
+                        'confidence': confidence,
+                        'tracking_state': self.tracking_state,
+                        'map_points': None,
+                        'keypoints': None,
+                        'timestamp': timestamp
+                    }
             
         except Exception as e:
             self.logger.error(f"Error processing frame with ORB-SLAM3: {e}")
