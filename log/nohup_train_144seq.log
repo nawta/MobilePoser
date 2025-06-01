@@ -1,0 +1,23 @@
+nohup: ignoring input
+Seed set to 42
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+wandb: Currently logged in as: nawta1998 (use `wandb login --relogin` to force relogin)
+Module Path:  poser /home/naoto/docker_workspace/MobilePoser/mobileposer/checkpoints/10/poser
+
+--------------------------------------------------
+Training Module: poser
+--------------------------------------------------
+
+wandb: wandb version 0.19.10 is available!  To upgrade, please run:
+wandb:  $ pip install wandb --upgrade
+wandb: Tracking run with wandb version 0.12.11
+wandb: Run data is saved locally in /home/naoto/docker_workspace/MobilePoser/mobileposer/checkpoints/10/poser/wandb/run-20250430_120240-3u5zdmvn
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run 2025-04-30-12:02:38
+wandb: ⭐️ View project at https://wandb.ai/nawta1998/poser
+wandb: 🚀 View run at https://wandb.ai/nawta1998/poser/runs/3u5zdmvn
+  0% 0/1 [00:00<?, ?it/s]/home/naoto/.conda/envs/mobileposer310/lib/python3.10/multiprocessing/resource_tracker.py:224: UserWarning: resource_tracker: There appear to be 6 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

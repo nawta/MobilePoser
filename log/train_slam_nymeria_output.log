@@ -1,0 +1,176 @@
+ORB-SLAM3 environment configured.
+PYTHONPATH includes: /home/naoto/docker_workspace/MobilePoser/third_party/pyOrbSlam3/pyOrbSlam3/build
+LD_LIBRARY_PATH includes: /usr/local/lib
+Using system libstdc++.so.6
+Checking SLAM availability...
+============================================================
+SLAM Integration Status
+============================================================
+ORB-SLAM3 Available: True
+Available SLAM Types: mock, real, orb_slam3, adaptive
+============================================================
+
+Starting SLAM-integrated training with Nymeria dataset...
+Using streaming mode to avoid OOM errors
+
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+/home/naoto/.local/lib/python3.12/site-packages/lightning/pytorch/trainer/configuration_validator.py:68: You passed in a `val_dataloader` but have no `validation_step`. Skipping val loop.
+wandb: Currently logged in as: nawta1998 to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.19.11
+wandb: Run data is saved locally in checkpoints/slam_nymeria/slam_2025-05-31-19:24:37/wandb/run-20250531_192437-kgd0mhcp
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run adaptive_2025-05-31-19:24:37
+wandb: ⭐️ View project at https://wandb.ai/nawta1998/mobileposer_slam_adaptive
+wandb: 🚀 View run at https://wandb.ai/nawta1998/mobileposer_slam_adaptive/runs/kgd0mhcp
+INFO:mobileposer.slam_selector:Creating adaptive SLAM interface with real ORB-SLAM3
+INFO:mobileposer.models.real_orbslam3:Successfully imported pyOrbSlam
+
+ORB-SLAM3 Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+ORB-SLAM2 Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+This program comes with ABSOLUTELY NO WARRANTY;
+This is free software, and you are welcome to redistribute it
+under certain conditions. See LICENSE.txt.
+
+Input sensor was set to: Monocular
+Loading settings from /home/naoto/docker_workspace/MobilePoser/third_party/pyOrbSlam3/pyOrbSlam3/modules/ORB_SLAM3/Examples/Monocular/TUM1.yaml
+	-Loaded camera 1
+Camera.newHeight optional parameter does not exist...
+Camera.newWidth optional parameter does not exist...
+	-Loaded image info
+	-Loaded ORB settings
+Viewer.imageViewScale optional parameter does not exist...
+	-Loaded viewer settings
+System.LoadAtlasFromFile optional parameter does not exist...
+System.SaveAtlasToFile optional parameter does not exist...
+	-Loaded Atlas settings
+System.thFarPoints optional parameter does not exist...
+	-Loaded misc parameters
+----------------------------------
+SLAM settings: 
+	-Camera 1 parameters (Pinhole): [ 517.306 516.469 318.643 255.314 ]
+	-Camera 1 distortion parameters: [  0.262383 -0.953104 -0.005358 0.002628 1.16331 ]
+	-Original image size: [ 640 , 480 ]
+	-Current image size: [ 640 , 480 ]
+	-Sequence FPS: 30
+	-Features per image: 1000
+	-ORB scale factor: 1.2
+	-ORB number of scales: 8
+	-Initial FAST threshold: 20
+	-Min FAST threshold: 7
+
+
+Loading ORB Vocabulary. This could take a while...
+Vocabulary loaded!
+
+Initialization of Atlas from scratch 
+Creation of new map with id: 0
+Creation of new map with last KF id: 0
+Seq. Name: 
+There are 1 cameras in the atlas
+Camera 0 is pinhole
+INFO:mobileposer.models.real_orbslam3:ORB-SLAM3 monocular system initialized successfully
+INFO:mobileposer.models.adaptive_slam:Real ORB-SLAM3 monocular system created successfully
+INFO:mobileposer.models.real_orbslam3:Successfully imported pyOrbSlam
+
+ORB-SLAM3 Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+ORB-SLAM2 Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+This program comes with ABSOLUTELY NO WARRANTY;
+This is free software, and you are welcome to redistribute it
+under certain conditions. See LICENSE.txt.
+
+Input sensor was set to: Monocular-Inertial
+Loading settings from /home/naoto/docker_workspace/MobilePoser/third_party/pyOrbSlam3/pyOrbSlam3/modules/ORB_SLAM3/Examples/Monocular-Inertial/EuRoC.yaml
+Camera1.k3 optional parameter does not exist...
+	-Loaded camera 1
+	-Loaded image info
+IMU.InsertKFsWhenLost optional parameter does not exist...
+	-Loaded IMU calibration
+	-Loaded ORB settings
+Viewer.imageViewScale optional parameter does not exist...
+	-Loaded viewer settings
+System.LoadAtlasFromFile optional parameter does not exist...
+System.SaveAtlasToFile optional parameter does not exist...
+	-Loaded Atlas settings
+System.thFarPoints optional parameter does not exist...
+	-Loaded misc parameters
+----------------------------------
+SLAM settings: 
+	-Camera 1 parameters (Pinhole): [ 458.654 457.296 367.215 248.375 ]
+	-Camera 1 distortion parameters: [  -0.283408 0.0739591 0.00019359 1.76187e-05 ]
+	-Original image size: [ 752 , 480 ]
+	-Current image size: [ 600 , 350 ]
+	-Camera 1 parameters after resize: [  365.947 333.445 292.991 181.107 ]
+	-Sequence FPS: 20
+	-Gyro noise: 0.00017
+	-Accelerometer noise: 0.002
+	-Gyro walk: 1.9393e-05
+	-Accelerometer walk: 0.003
+	-IMU frequency: 200
+	-Features per image: 1000
+	-ORB scale factor: 1.2
+	-ORB number of scales: 8
+	-Initial FAST threshold: 20
+	-Min FAST threshold: 7
+
+
+Loading ORB Vocabulary. This could take a while...
+Vocabulary loaded!
+
+Initialization of Atlas from scratch 
+Creation of new map with id: 1
+Creation of new map with last KF id: 0
+Seq. Name: 
+There are 1 cameras in the atlas
+Camera 2 is pinhole
+INFO:mobileposer.models.real_orbslam3:ORB-SLAM3 visual_inertial system initialized successfully
+INFO:mobileposer.models.adaptive_slam:Real ORB-SLAM3 visual-inertial system created successfully
+INFO:mobileposer.models.real_orbslam3:Successfully imported pyOrbSlam
+
+ORB-SLAM3 Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+ORB-SLAM2 Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+This program comes with ABSOLUTELY NO WARRANTY;
+This is free software, and you are welcome to redistribute it
+under certain conditions. See LICENSE.txt.
+
+Input sensor was set to: Monocular
+Loading settings from /home/naoto/docker_workspace/MobilePoser/third_party/pyOrbSlam3/pyOrbSlam3/modules/ORB_SLAM3/Examples/Monocular/TUM1.yaml
+	-Loaded camera 1
+Camera.newHeight optional parameter does not exist...
+Camera.newWidth optional parameter does not exist...
+	-Loaded image info
+	-Loaded ORB settings
+Viewer.imageViewScale optional parameter does not exist...
+	-Loaded viewer settings
+System.LoadAtlasFromFile optional parameter does not exist...
+System.SaveAtlasToFile optional parameter does not exist...
+	-Loaded Atlas settings
+System.thFarPoints optional parameter does not exist...
+	-Loaded misc parameters
+----------------------------------
+SLAM settings: 
+	-Camera 1 parameters (Pinhole): [ 517.306 516.469 318.643 255.314 ]
+	-Camera 1 distortion parameters: [  0.262383 -0.953104 -0.005358 0.002628 1.16331 ]
+	-Original image size: [ 640 , 480 ]
+	-Current image size: [ 640 , 480 ]
+	-Sequence FPS: 30
+	-Features per image: 1000
+	-ORB scale factor: 1.2
+	-ORB number of scales: 8
+	-Initial FAST threshold: 20
+	-Min FAST threshold: 7
+
+
+Loading ORB Vocabulary. This could take a while...
+Vocabulary loaded!
+
+Initialization of Atlas from scratch 
+Creation of new map with id: 2
+Creation of new map with last KF id: 0
+Seq. Name: 
+There are 1 cameras in the atlas
+Camera 4 is pinhole
+Shutdown
+free(): invalid pointer
+Training completed. Check train_slam_nymeria.log for details.

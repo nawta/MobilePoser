@@ -47,3 +47,12 @@ mobileposer/datasets/
 **/data/
 **/tranpose/
 **/a.mp4
+
+# Large log files
+log/tmp_log
+log/*.out
+log/*_log
+*.log.large
+
+# Temporary files
+tmp_log

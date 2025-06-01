@@ -27,6 +27,36 @@ You will then need to install the local mobileposer package for development via 
 pip install -e .
 ```
 
+## Directory Structure
+
+The project is organized with the following directory structure:
+
+```
+MobilePoser/
+├── mobileposer/          # Main package with model and training code
+├── test/                 # Unit tests and integration tests
+├── tmp/                  # Temporary scripts, demos, and examples
+├── log/                  # Log files and training outputs
+├── datasets/             # Processed datasets
+├── checkpoints/          # Model checkpoints
+├── outputs/              # Visualization outputs
+└── third_party/          # External dependencies (ORB-SLAM3, pyOrbSlam3, etc.)
+```
+
+### Key Directories:
+- **`test/`**: Contains all unit tests that can be run with pytest
+- **`tmp/`**: Temporary scripts, demos, analysis tools, and example outputs
+- **`log/`**: Training logs, error logs, and process outputs
+
+### Running Tests:
+```bash
+# Run all tests
+python -m pytest test/
+
+# Run specific test
+python test/test_slam_unit.py
+```
+
 ## Process Datasets
 
 ### Download Training Data
