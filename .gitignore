@@ -56,3 +56,15 @@ log/*_log
 
 # Temporary files
 tmp_log
+tmp/*
+
+# Analysis results (keep scripts, ignore generated files)
+analysis/**/*.png
+analysis/**/*.txt
+analysis/**/*.jpg
+analysis/**/*.mp4
+analysis/**/*.csv
+# Keep Python scripts and documentation
+!analysis/**/*.py
+!analysis/**/*.md
+
