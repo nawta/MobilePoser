@@ -47,3 +47,24 @@ mobileposer/datasets/
 **/data/
 **/tranpose/
 **/a.mp4
+
+# Large log files
+log/tmp_log
+log/*.out
+log/*_log
+*.log.large
+
+# Temporary files
+tmp_log
+tmp/*
+
+# Analysis results (keep scripts, ignore generated files)
+analysis/**/*.png
+analysis/**/*.txt
+analysis/**/*.jpg
+analysis/**/*.mp4
+analysis/**/*.csv
+# Keep Python scripts and documentation
+!analysis/**/*.py
+!analysis/**/*.md
+

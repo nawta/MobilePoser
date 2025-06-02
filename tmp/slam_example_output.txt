@@ -1,0 +1,145 @@
+SLAM PROCESSING CODE EXAMPLES
+
+============================================================
+BASIC SLAM EXAMPLE
+============================================================
+
+1. Initializing SLAM...
+   ✓ Vocabulary loaded
+   ✓ Camera calibration loaded
+   ✓ Ready to process frames
+
+2. Processing RGB frame...
+
+3. SLAM Output:
+   - Has pose: True
+   - Confidence: 0.200
+   - Tracking state: initializing
+
+   4x4 Pose Matrix:
+   ----------------------------------------
+   [ 1.0000  0.0000  0.0000  0.0000]
+   [ 0.0000  1.0000  0.0000  0.0000]
+   [ 0.0000  0.0000  1.0000  0.0000]
+   [ 0.0000  0.0000  0.0000  1.0000]
+
+   Position (X,Y,Z): (0.000, 0.000, 0.000) meters
+
+4. SLAM shutdown complete
+
+============================================================
+ADAPTIVE SLAM EXAMPLE
+============================================================
+
+1. Adaptive SLAM initialized
+   ✓ Monocular SLAM ready
+   ✓ Visual-Inertial SLAM ready
+   ✓ Mode selection automatic
+
+2. Testing different sensor configurations:
+--------------------------------------------------
+
+   RGB only:
+   - Mode used: monocular
+   - Has pose: True
+   - Confidence: 0.200
+   - Scale confidence: 0.300
+
+   RGB + IMU:
+   - Mode used: visual_inertial
+   - Has pose: True
+   - Confidence: 0.200
+   - Scale confidence: 0.800
+
+   IMU only:
+   - Mode used: none
+   - Has pose: False
+   - Confidence: 0.000
+   - Scale confidence: 0.000
+
+   No sensors:
+   - Mode used: none
+   - Has pose: False
+   - Confidence: 0.000
+   - Scale confidence: 0.000
+
+3. Adaptive SLAM Statistics:
+   - Frames processed: 4
+   - Mode switches: 3
+   - Current mode: SlamMode.NONE
+
+4. Adaptive SLAM shutdown complete
+
+============================================================
+ENSEMBLE FUSION EXAMPLE
+============================================================
+
+1. Weight calculation for different scenarios:
+--------------------------------------------------
+
+   Scenario 1: SLAM Lost
+   - IMU confidence: 0.80
+   - SLAM confidence: 0.00
+   → IMU weight: 1.00, SLAM weight: 0.00
+
+   Scenario 2: Both tracking well
+   - IMU confidence: 0.80
+   - SLAM confidence: 0.85
+   → IMU weight: 0.36, SLAM weight: 0.64
+
+2. Weight component breakdown:
+   - Confidence factor: IMU=0.485, SLAM=0.515
+   - Tracking state factor: IMU=0.500, SLAM=0.500
+   - Temporal consistency: IMU=0.600, SLAM=0.400
+   - Scale quality: IMU=0.100, SLAM=0.900
+
+============================================================
+DATA FORMAT EXAMPLE
+============================================================
+
+1. Input Data Formats:
+------------------------------
+
+   RGB Frame:
+   - Type: numpy.ndarray
+   - Shape: (480, 640, 3)
+   - Dtype: uint8
+   - Range: 0-255
+   - Format: BGR (OpenCV convention)
+
+   IMU Data:
+   - Type: numpy.ndarray
+   - Shape: (6,)
+   - Contents: [acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z]
+   - Units: m/s² for accelerometer, rad/s for gyroscope
+   - Example: [0.1, 0.2, 9.81, 0.01, 0.02, 0.03]
+
+2. Output Data Formats:
+------------------------------
+
+   Pose Matrix (SE3):
+   - Type: numpy.ndarray
+   - Shape: (4, 4)
+   - Structure:
+     [[r11, r12, r13, tx],
+      [r21, r22, r23, ty],
+      [r31, r32, r33, tz],
+      [0,   0,   0,   1 ]]
+   - R (3x3): Rotation matrix
+   - t (3x1): Translation vector in meters
+
+   6DOF Head Pose:
+   - Position: (X, Y, Z) in meters
+   - Orientation: (Roll, Pitch, Yaw) in radians
+   - Extracted from pose matrix
+
+   Confidence Score:
+   - Range: 0.0 to 1.0
+   - 0.0: No confidence (lost tracking)
+   - 0.2: Initializing
+   - 0.5+: Good tracking
+   - 0.8+: Excellent tracking
+
+============================================================
+COMPLETE!
+============================================================

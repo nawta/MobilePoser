@@ -1,0 +1,4 @@
+[submodule "third_party/Pangolin"]
+	path = third_party/Pangolin
+	url = https://github.com/nawta/Pangolin.git
+
