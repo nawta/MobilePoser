@@ -1,0 +1,5 @@
+nohup: ignoring input
+usage: process.py [-h] --dataset DATASET [--restart]
+                  [--max-sequences MAX_SEQUENCES]
+                  [--contact-logic CONTACT_LOGIC] [--imu-device {aria,xsens}]
+process.py: error: unrecognized arguments: --resume

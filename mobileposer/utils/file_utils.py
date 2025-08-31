@@ -9,7 +9,7 @@ from mobileposer.config import paths, amass, datasets
 
 def make_dir(path: str):
     if not os.path.exists(path):
-        os.mkdir(path)
+        os.makedirs(path, exist_ok=True)
 
 def get_datestring():
     return datetime.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")

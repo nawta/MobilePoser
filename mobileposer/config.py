@@ -6,7 +6,7 @@ from enum import Enum, auto
 class train_hypers:
     """Hyperparameters for training."""
     batch_size = 2048
-    num_workers = 32
+    num_workers = 16
     # Prefetch factor for DataLoader
     prefetch_factor = 2
     # Pin memory for faster GPU transfer
@@ -105,7 +105,7 @@ class amass:
 class datasets:
     """Dataset information."""
     # FPS of data
-    fps = 30
+    fps = 30  # Match IMU sampling rate for proper VI-SLAM synchronization
 
     # DIP dataset
     dip_test = "dip_test.pt"
